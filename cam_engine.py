@@ -889,11 +889,19 @@ def calculate_surprise(content: str, context: Optional[str] = None, engram_conte
         combined_context = f"{combined_context} {engram_context}".strip()
 
     context_diff = 0.5
+    engram_familiarity = 0.0
     if combined_context:
         context_words = set(combined_context.lower().split())
         if context_words:
             overlap = len(unique_words & context_words) / max(len(unique_words), 1)
             context_diff = 1.0 - overlap  # Less overlap = more surprise
+
+        # MARKER_MEM_PHASE6: CAM surprise modulator — engram familiarity
+        # Ratio of content words already known via ENGRAM context
+        if engram_context:
+            engram_words = set(engram_context.lower().split())
+            if engram_words:
+                engram_familiarity = len(unique_words & engram_words) / max(len(unique_words), 1)
 
     # Combine factors
     surprise = (
@@ -902,6 +910,9 @@ def calculate_surprise(content: str, context: Optional[str] = None, engram_conte
         code_score * 0.15 +
         context_diff * 0.35
     )
+
+    # PHASE6: Modulate by engram familiarity — familiar patterns get lower surprise
+    surprise *= (1.0 - 0.5 * engram_familiarity)
 
     return max(0.0, min(1.0, surprise))
 
