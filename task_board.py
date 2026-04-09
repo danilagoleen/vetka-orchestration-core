@@ -3256,6 +3256,7 @@ class TaskBoard:
     # Notification types that trigger auto-creation
     NOTIF_TASK_VERIFIED = "task_verified"
     NOTIF_TASK_NEEDS_FIX = "task_needs_fix"
+    NOTIF_MERGE_CONFLICT = "merge_conflict"  # MARKER_210.MERGE_CONFLICT: strategy conflict, not QA fail
     NOTIF_READY_TO_MERGE = "ready_to_merge"
     NOTIF_TASK_COMPLETED = "task_completed"
     NOTIF_CUSTOM = "custom"
@@ -3598,6 +3599,7 @@ class TaskBoard:
         _ACTION_MAP = {
             self.NOTIF_TASK_VERIFIED: "merge_request",
             self.NOTIF_TASK_NEEDS_FIX: "fix",
+            self.NOTIF_MERGE_CONFLICT: "fix",
             self.NOTIF_READY_TO_MERGE: "merge_request",
             self.NOTIF_TASK_COMPLETED: "verify",
         }
@@ -3616,6 +3618,10 @@ class TaskBoard:
             # Notify owner
             if owner:
                 targets.append((owner, f"{wake_hint} QA FAIL: {title}. {extra_msg}"))
+        elif ntype == self.NOTIF_MERGE_CONFLICT:
+            # MARKER_210.MERGE_CONFLICT: Strategy conflict — notify owner, not QA fail
+            if owner:
+                targets.append((owner, f"{wake_hint} MERGE CONFLICT: {title}. {extra_msg}"))
         elif ntype == self.NOTIF_READY_TO_MERGE:
             targets.append(("Commander", f"Ready to merge: {title} [{task_id}]"))
         elif ntype == self.NOTIF_TASK_COMPLETED:
@@ -3660,10 +3666,14 @@ class TaskBoard:
             self.NOTIF_TASK_VERIFIED: ["Commander"],
             self.NOTIF_READY_TO_MERGE: ["Commander"],
             self.NOTIF_TASK_NEEDS_FIX: [],  # populated dynamically below
+            self.NOTIF_MERGE_CONFLICT: [],  # populated dynamically below
         }
         wake_roles = list(_WAKE_TARGETS.get(ntype, []))
         # Wake task owner on needs_fix so they see the QA failure
         if ntype == self.NOTIF_TASK_NEEDS_FIX and owner:
+            wake_roles.append(owner)
+        # Wake task owner on merge_conflict so they can rework the branch
+        if ntype == self.NOTIF_MERGE_CONFLICT and owner:
             wake_roles.append(owner)
         for wake_target in wake_roles:
             self._synapse_wake(wake_target, message=wake_hint)
@@ -5356,10 +5366,10 @@ class TaskBoard:
                                 f"{conflicting[:5]}. Use strategy=merge or resolve manually."
                             )
                             logger.warning("[MergeRequest] %s", _conflict_msg)
-                            # Notify Commander about conflict
+                            # MARKER_210.MERGE_CONFLICT: Notify author — this is a strategy conflict, not QA fail
                             try:
                                 self._auto_notify(
-                                    task or {}, self.NOTIF_TASK_NEEDS_FIX,
+                                    task or {}, self.NOTIF_MERGE_CONFLICT,
                                     extra_msg=_conflict_msg,
                                     source_role="merge_request",
                                 )
