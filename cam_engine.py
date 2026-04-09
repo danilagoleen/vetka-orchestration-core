@@ -833,7 +833,7 @@ cam_engine = get_cam_engine
 # Phase 92: Standalone surprise calculation for tools
 # ═══════════════════════════════════════════════════════════════════
 
-def calculate_surprise(content: str, context: Optional[str] = None) -> float:
+def calculate_surprise(content: str, context: Optional[str] = None, engram_context: Optional[str] = None) -> float:
     """
     Calculate surprise score for content.
 
@@ -883,9 +883,14 @@ def calculate_surprise(content: str, context: Optional[str] = None) -> float:
     code_score = sum(1 for ind in code_indicators if ind in content) / len(code_indicators)
 
     # Compare with context if provided
+    # MARKER_MEM_PHASE5: Merge engram_context into context for hydrated surprise
+    combined_context = context or ""
+    if engram_context:
+        combined_context = f"{combined_context} {engram_context}".strip()
+
     context_diff = 0.5
-    if context:
-        context_words = set(context.lower().split())
+    if combined_context:
+        context_words = set(combined_context.lower().split())
         if context_words:
             overlap = len(unique_words & context_words) / max(len(unique_words), 1)
             context_diff = 1.0 - overlap  # Less overlap = more surprise
