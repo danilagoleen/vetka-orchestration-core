@@ -3407,6 +3407,15 @@ class TaskBoard:
                     self.event_bus.emit(event)
             except Exception as bus_err:
                 logger.debug("[TaskBoard] NOTIFY_BUS emit failed (non-fatal): %s", bus_err)
+
+            # MARKER_210.NOTIFY_WAKE_V2: Wake target agent via tmux on explicit notify().
+            # Bug: notify() wrote to DB/signal but never called _synapse_wake().
+            # Only send_notification() had the wake call. This caused Delta wake regression.
+            try:
+                self._synapse_wake(target_role, message=f"[{source_role}] {message[:120]}")
+            except Exception as wake_err:
+                logger.debug("[TaskBoard] notify wake failed for %s: %s", target_role, wake_err)
+
             return {"success": True, "notification_id": notif_id}
         except Exception as e:
             logger.warning(f"[TaskBoard] notify failed: {e}")
