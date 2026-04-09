@@ -26,8 +26,9 @@ import os
 import re
 import subprocess
 import asyncio
+import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("VETKA_TASK_BOARD")
@@ -687,6 +688,60 @@ class TaskBoard:
                     logger.warning(f"[TaskBoard] Migration 4 (audit_log) failed: {e}")
                 except Exception as e:
                     logger.warning(f"[TaskBoard] Migration 4 (audit_log) failed: {e}")
+
+        if current < 5:
+            # Migration 5: Memories table (MARKER_MEM_PHASE7A)
+            mem_exists = self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
+            ).fetchone()
+            if mem_exists:
+                self._set_schema_version(5)
+            else:
+                try:
+                    self.db.executescript("""
+                        CREATE TABLE IF NOT EXISTS memories (
+                            memory_id TEXT PRIMARY KEY,
+                            role_id TEXT NOT NULL,
+                            project_id TEXT NOT NULL DEFAULT '',
+                            task_id TEXT NOT NULL DEFAULT '',
+                            memory_type TEXT NOT NULL DEFAULT 'learning',
+                            content TEXT NOT NULL,
+                            tags JSON DEFAULT '[]',
+                            trigger_keys JSON DEFAULT '[]',
+                            created_at TEXT NOT NULL,
+                            expires_at TEXT DEFAULT NULL,
+                            hit_count INTEGER NOT NULL DEFAULT 0,
+                            last_recalled_at TEXT DEFAULT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_mem_role ON memories(role_id);
+                        CREATE INDEX IF NOT EXISTS idx_mem_type ON memories(memory_type);
+                        CREATE INDEX IF NOT EXISTS idx_mem_role_type ON memories(role_id, memory_type);
+                        CREATE INDEX IF NOT EXISTS idx_mem_task ON memories(task_id);
+                        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                            memory_id UNINDEXED,
+                            content,
+                            tags_text,
+                            tokenize='unicode61'
+                        );
+                    """)
+                    self._set_schema_version(5)
+                    logger.info(
+                        "[TaskBoard] Migration 5: memories table + FTS5 created "
+                        "(MARKER_MEM_PHASE7A)"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        logger.warning(
+                            "[TaskBoard] Migration 5 deferred — database locked"
+                        )
+                        return
+                    logger.warning(
+                        f"[TaskBoard] Migration 5 (memories) failed: {e}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[TaskBoard] Migration 5 (memories) failed: {e}"
+                    )
 
     # ==========================================
     # MARKER_199.FTS5: Full-Text Search
@@ -3481,6 +3536,158 @@ class TaskBoard:
             return {"success": True, "acked": cur.rowcount}
         except Exception as e:
             logger.warning(f"[TaskBoard] ack_notifications failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================
+    # MARKER_MEM_PHASE7B: Structured memory CRUD
+    # ==========================================
+
+    def remember(
+        self,
+        content: str,
+        memory_type: str = "learning",
+        role_id: str = "",
+        project_id: str = "",
+        task_id: str = "",
+        tags: Optional[List[str]] = None,
+        trigger_keys: Optional[List[str]] = None,
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Store a structured memory in the memories table.
+
+        Auto-generates memory_id. Caller should auto-fill role_id/project_id/task_id
+        from session context.
+
+        Returns:
+            {"success": True, "memory_id": "mem_xxxx"}
+        """
+        memory_id = f"mem_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        tags_json = json.dumps(tags or [])
+        trigger_json = json.dumps(trigger_keys or [])
+
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO memories "
+                    "(memory_id, role_id, project_id, task_id, memory_type, "
+                    "content, tags, trigger_keys, created_at, expires_at, "
+                    "hit_count, last_recalled_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)",
+                    (
+                        memory_id, role_id, project_id, task_id,
+                        memory_type, content, tags_json, trigger_json,
+                        now, expires_at,
+                    ),
+                )
+                # Index in FTS5
+                tags_text = " ".join(tags or [])
+                self.db.execute(
+                    "INSERT INTO memories_fts (memory_id, content, tags_text) "
+                    "VALUES (?, ?, ?)",
+                    (memory_id, content, tags_text),
+                )
+            return {"success": True, "memory_id": memory_id}
+        except Exception as e:
+            logger.warning(f"[TaskBoard] remember() failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def recall(
+        self,
+        role_id: str = "",
+        memory_type: str = "",
+        query: str = "",
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """Recall memories by role, type, and/or FTS5 query.
+
+        At least one filter (role_id, memory_type, or query) is required.
+        Results sorted by created_at DESC. Updates hit_count + last_recalled_at.
+
+        Returns:
+            {"success": True, "memories": [...], "count": N}
+        """
+        if not role_id and not memory_type and not query:
+            return {"success": False, "error": "At least one filter required (role_id, memory_type, or query)"}
+
+        try:
+            if query:
+                # FTS5 search, optionally filtered by role/type
+                sql = (
+                    "SELECT m.memory_id, m.role_id, m.project_id, m.task_id, "
+                    "m.memory_type, m.content, m.tags, m.trigger_keys, "
+                    "m.created_at, m.hit_count, m.last_recalled_at "
+                    "FROM memories m "
+                    "JOIN memories_fts f ON m.memory_id = f.memory_id "
+                    "WHERE memories_fts MATCH ?"
+                )
+                params: list = [query]
+                if role_id:
+                    sql += " AND m.role_id = ?"
+                    params.append(role_id)
+                if memory_type:
+                    sql += " AND m.memory_type = ?"
+                    params.append(memory_type)
+                sql += " ORDER BY rank LIMIT ?"
+                params.append(limit)
+            else:
+                # Direct filter by role/type
+                conditions = []
+                params = []
+                if role_id:
+                    conditions.append("role_id = ?")
+                    params.append(role_id)
+                if memory_type:
+                    conditions.append("memory_type = ?")
+                    params.append(memory_type)
+                where = " AND ".join(conditions)
+                sql = (
+                    "SELECT memory_id, role_id, project_id, task_id, "
+                    "memory_type, content, tags, trigger_keys, "
+                    "created_at, hit_count, last_recalled_at "
+                    f"FROM memories WHERE {where} "
+                    "ORDER BY created_at DESC LIMIT ?"
+                )
+                params.append(limit)
+
+            rows = self.db.execute(sql, params).fetchall()
+            now = datetime.now(timezone.utc).isoformat()
+            memories = []
+            ids_to_update = []
+            for row in rows:
+                mem = {
+                    "memory_id": row[0],
+                    "role_id": row[1],
+                    "project_id": row[2],
+                    "task_id": row[3],
+                    "memory_type": row[4],
+                    "content": row[5],
+                    "tags": json.loads(row[6]) if row[6] else [],
+                    "trigger_keys": json.loads(row[7]) if row[7] else [],
+                    "created_at": row[8],
+                    "hit_count": row[9],
+                    "last_recalled_at": row[10],
+                }
+                memories.append(mem)
+                ids_to_update.append(row[0])
+
+            # Update hit_count + last_recalled_at
+            if ids_to_update:
+                placeholders = ",".join("?" for _ in ids_to_update)
+                try:
+                    with self.db:
+                        self.db.execute(
+                            f"UPDATE memories SET hit_count = hit_count + 1, "
+                            f"last_recalled_at = ? "
+                            f"WHERE memory_id IN ({placeholders})",
+                            [now] + ids_to_update,
+                        )
+                except Exception:
+                    pass  # hit_count update is best-effort
+
+            return {"success": True, "memories": memories, "count": len(memories)}
+        except Exception as e:
+            logger.warning(f"[TaskBoard] recall() failed: {e}")
             return {"success": False, "error": str(e)}
 
     # ==========================================
