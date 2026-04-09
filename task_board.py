@@ -3492,6 +3492,10 @@ class TaskBoard:
             except Exception as sig_err:
                 logger.debug("[TaskBoard] FILE_SIGNAL write failed (non-fatal): %s", sig_err)
 
+            # MARKER_MEM_PHASE1.WAKE_ON_NOTIFY: Always try tmux wake on manual notify
+            # Previously only _auto_notify called _synapse_wake, leaving action=notify silent.
+            self._synapse_wake(target_role, message)
+
             # MARKER_205.NOTIFY_BUS: Emit notify event through EventBus → UDS daemon
             # This enables autospawn: daemon receives notify, checks tmux, spawns offline agent.
             try:
