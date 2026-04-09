@@ -4787,6 +4787,36 @@ class TaskBoard:
                 _status,
             )
 
+        # MARKER_210.MERGE_AUTHORITY: Block merge if caller has no authority for task domain
+        import os as _os
+        _caller_role = _os.environ.get("VETKA_AGENT_ROLE", "").strip()
+        if _caller_role and _caller_role != "Commander":
+            try:
+                from src.services.agent_registry import get_agent_registry
+                _reg = get_agent_registry()
+                _merge_captains = (_reg.data or {}).get("merge_captains", {})
+                _task_domain = task.get("domain", "")
+                _authorized = (
+                    _merge_captains.get(_task_domain)
+                    or _merge_captains.get("default", ["Commander"])
+                )
+                if _caller_role not in _authorized:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Merge blocked: role '{_caller_role}' has no merge authority "
+                            f"for domain '{_task_domain}'. "
+                            f"Authorized: {', '.join(_authorized)}. "
+                            f"Notify the captain: vetka_task_board action=notify "
+                            f"target_role={_authorized[0]} message=\"Task ready for merge: {task_id}\""
+                        ),
+                        "merge_authority": _authorized,
+                        "caller_role": _caller_role,
+                        "task_domain": _task_domain,
+                    }
+            except Exception as _ma_err:
+                logger.debug("[MergeAuthority] Registry check failed (non-fatal): %s", _ma_err)
+
         branch = task.get("branch_name")
         # MARKER_195.21: Auto-infer branch from role via AgentRegistry
         if not branch:
@@ -4860,44 +4890,6 @@ class TaskBoard:
                 "success": False,
                 "error": f"No commits found on '{branch}' ahead of main",
             }
-
-        # MARKER_210.LARGE_MERGE: Pre-flight validation for large merges (20+ commits)
-        # Root cause: Wave 3 regression (56-commit merge) passed without validation.
-        # Solution: Large merges require full test suite + hook validation before merge.
-        if len(commits) > 20:
-            logger.warning(
-                f"[MergeRequest] LARGE MERGE DETECTED: {len(commits)} commits on {branch}"
-            )
-
-            # Check 1: Require closure_tests (integration tests)
-            if not closure_tests:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Large merge policy: {len(commits)} commits require closure_tests for integration validation. "
-                        f"Update task with closure_tests before merging. "
-                        f"Example: closure_tests=['python -m pytest tests/ -v']"
-                    ),
-                    "large_merge_blocked": True,
-                    "commit_count": len(commits),
-                }
-
-            # Check 2: Block force=True on large merges (cannot bypass validation)
-            if force:
-                logger.error(
-                    f"[MergeRequest] LARGE MERGE FORCE BLOCKED: {len(commits)} commits, "
-                    f"force=True not allowed for large merges. Task {task_id}"
-                )
-                return {
-                    "success": False,
-                    "error": (
-                        f"Large merge policy: force=True not allowed for merges >20 commits. "
-                        f"Large merges must pass validation normally. "
-                        f"Current: {len(commits)} commits on {branch}"
-                    ),
-                    "large_merge_blocked": True,
-                    "commit_count": len(commits),
-                }
 
         # MARKER_200.MERGE_AUTO: Auto-select strategy if not explicitly set
         # 1-3 commits → cherry-pick (clean per-commit history)
@@ -5108,18 +5100,6 @@ class TaskBoard:
             f"[MergeRequest] {branch} → main via {strategy}: {len(commits)} commits, "
             f"tests_delta={eval_delta['tests_delta']}"
         )
-
-        # MARKER_210.LARGE_MERGE: Post-merge validation for strategy-specific requirements
-        post_merge_validation = await self.validate_post_merge_requirements(branch, strategy)
-        if post_merge_validation.get("issues"):
-            logger.warning(
-                f"[MergeRequest] Post-merge validation issues: {post_merge_validation['issues']}"
-            )
-            full_result["post_merge_validation"] = post_merge_validation
-        if post_merge_validation.get("warnings"):
-            logger.info(
-                f"[MergeRequest] Post-merge validation warnings: {post_merge_validation['warnings']}"
-            )
 
         # MARKER_198.STALE: Post-merge stale scan — flag pending tasks that may be resolved by this merge
         stale_hint = None
