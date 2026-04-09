@@ -688,60 +688,6 @@ class TaskBoard:
                 except Exception as e:
                     logger.warning(f"[TaskBoard] Migration 4 (audit_log) failed: {e}")
 
-        if current < 5:
-            # Migration 5: Debriefs table — hybrid MD/SQLite (MARKER_MEM_PHASE3)
-            debrief_exists = self.db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='debriefs'"
-            ).fetchone()
-            if debrief_exists:
-                self._set_schema_version(5)
-            else:
-                try:
-                    self.db.executescript("""
-                        CREATE TABLE IF NOT EXISTS debriefs (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            task_id TEXT,
-                            agent_id TEXT NOT NULL,
-                            session_id TEXT DEFAULT '',
-                            model_tier TEXT DEFAULT '',
-                            domain TEXT DEFAULT '',
-                            q1_bugs TEXT DEFAULT '',
-                            q2_worked TEXT DEFAULT '',
-                            q3_idea TEXT DEFAULT '',
-                            q4_handoff TEXT DEFAULT '',
-                            q5_hot_files TEXT DEFAULT '',
-                            q6_project TEXT DEFAULT '',
-                            subsystems TEXT DEFAULT '[]',
-                            created_at TEXT DEFAULT (datetime('now'))
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_debriefs_task ON debriefs(task_id);
-                        CREATE INDEX IF NOT EXISTS idx_debriefs_agent ON debriefs(agent_id);
-                        CREATE INDEX IF NOT EXISTS idx_debriefs_created ON debriefs(created_at);
-
-                        CREATE VIRTUAL TABLE IF NOT EXISTS debriefs_fts USING fts5(
-                            task_id UNINDEXED,
-                            agent_id UNINDEXED,
-                            q1_bugs,
-                            q2_worked,
-                            q3_idea,
-                            q4_handoff,
-                            q5_hot_files,
-                            q6_project,
-                            tokenize='unicode61'
-                        );
-                    """)
-                    self._set_schema_version(5)
-                    logger.info("[TaskBoard] Migration 5: debriefs + debriefs_fts tables created")
-                except sqlite3.OperationalError as e:
-                    if "locked" in str(e).lower():
-                        logger.warning(
-                            "[TaskBoard] Migration 5 deferred — database locked"
-                        )
-                        return
-                    logger.warning(f"[TaskBoard] Migration 5 (debriefs) failed: {e}")
-                except Exception as e:
-                    logger.warning(f"[TaskBoard] Migration 5 (debriefs) failed: {e}")
-
     # ==========================================
     # MARKER_199.FTS5: Full-Text Search
     # ==========================================
@@ -881,112 +827,6 @@ class TaskBoard:
             return results
         except Exception as e:
             logger.warning(f"[FTS5] Search failed for query '{query}': {e}")
-            return []
-
-    # ==========================================
-    # MARKER_MEM_PHASE3: Debriefs — Hybrid MD/SQLite
-    # ==========================================
-
-    def save_debrief(self, task_id: str, agent_id: str, **kwargs) -> bool:
-        """Save structured debrief data to debriefs table.
-
-        Called from _inject_debrief after action=complete.
-        MD write continues separately via role_memory_writer (archive).
-        """
-        try:
-            fields = {
-                "task_id": task_id,
-                "agent_id": agent_id,
-                "session_id": kwargs.get("session_id", ""),
-                "model_tier": kwargs.get("model_tier", ""),
-                "domain": kwargs.get("domain", ""),
-                "q1_bugs": kwargs.get("q1_bugs", ""),
-                "q2_worked": kwargs.get("q2_worked", ""),
-                "q3_idea": kwargs.get("q3_idea", ""),
-                "q4_handoff": kwargs.get("q4_handoff", ""),
-                "q5_hot_files": kwargs.get("q5_hot_files", ""),
-                "q6_project": kwargs.get("q6_project", ""),
-                "subsystems": kwargs.get("subsystems", "[]"),
-            }
-            self.db.execute(
-                "INSERT INTO debriefs (task_id, agent_id, session_id, model_tier, domain, "
-                "q1_bugs, q2_worked, q3_idea, q4_handoff, q5_hot_files, q6_project, subsystems) "
-                "VALUES (:task_id, :agent_id, :session_id, :model_tier, :domain, "
-                ":q1_bugs, :q2_worked, :q3_idea, :q4_handoff, :q5_hot_files, :q6_project, :subsystems)",
-                fields,
-            )
-            # Index in FTS5
-            self.db.execute(
-                "INSERT INTO debriefs_fts (task_id, agent_id, q1_bugs, q2_worked, q3_idea, "
-                "q4_handoff, q5_hot_files, q6_project) "
-                "VALUES (:task_id, :agent_id, :q1_bugs, :q2_worked, :q3_idea, "
-                ":q4_handoff, :q5_hot_files, :q6_project)",
-                fields,
-            )
-            self.db.commit()
-            logger.debug("[Debriefs] Saved debrief for task %s by %s", task_id, agent_id)
-            return True
-        except Exception as e:
-            logger.warning("[Debriefs] Failed to save debrief for %s: %s", task_id, e)
-            return False
-
-    def query_debriefs(
-        self,
-        agent_id: str = "",
-        task_id: str = "",
-        domain: str = "",
-        query: str = "",
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """Query debriefs by agent, task, domain, or FTS5 text search.
-
-        Returns list of structured debrief dicts.
-        """
-        try:
-            if query and query.strip():
-                # FTS5 search
-                import re as _re_fts
-                _sanitized = _re_fts.sub(r'[^\w\s"*]', " ", query).strip()
-                if not _sanitized:
-                    return []
-                rows = self.db.execute(
-                    "SELECT d.* FROM debriefs d "
-                    "JOIN debriefs_fts f ON d.task_id = f.task_id AND d.agent_id = f.agent_id "
-                    "WHERE debriefs_fts MATCH ? ORDER BY d.created_at DESC LIMIT ?",
-                    (_sanitized, limit),
-                ).fetchall()
-            else:
-                # Structured query
-                conditions = []
-                params = []
-                if agent_id:
-                    conditions.append("agent_id = ?")
-                    params.append(agent_id)
-                if task_id:
-                    conditions.append("task_id = ?")
-                    params.append(task_id)
-                if domain:
-                    conditions.append("domain = ?")
-                    params.append(domain)
-                where = " AND ".join(conditions) if conditions else "1=1"
-                params.append(limit)
-                rows = self.db.execute(
-                    f"SELECT * FROM debriefs WHERE {where} ORDER BY created_at DESC LIMIT ?",
-                    params,
-                ).fetchall()
-
-            columns = [
-                "id", "task_id", "agent_id", "session_id", "model_tier", "domain",
-                "q1_bugs", "q2_worked", "q3_idea", "q4_handoff", "q5_hot_files",
-                "q6_project", "subsystems", "created_at",
-            ]
-            results = []
-            for row in rows:
-                entry = dict(zip(columns, row))
-                results.append(entry)
-            return results
-        except Exception as e:
-            logger.warning("[Debriefs] Query failed: %s", e)
             return []
 
     def get_debrief_skipped_tasks(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -3416,7 +3256,6 @@ class TaskBoard:
     # Notification types that trigger auto-creation
     NOTIF_TASK_VERIFIED = "task_verified"
     NOTIF_TASK_NEEDS_FIX = "task_needs_fix"
-    NOTIF_MERGE_CONFLICT = "merge_conflict"  # MARKER_210.MERGE_CONFLICT: strategy conflict, not QA fail
     NOTIF_READY_TO_MERGE = "ready_to_merge"
     NOTIF_TASK_COMPLETED = "task_completed"
     NOTIF_CUSTOM = "custom"
@@ -3491,10 +3330,6 @@ class TaskBoard:
                 logger.debug("[TaskBoard] FILE_SIGNAL: wrote %s (%d entries)", signal_file.name, len(existing))
             except Exception as sig_err:
                 logger.debug("[TaskBoard] FILE_SIGNAL write failed (non-fatal): %s", sig_err)
-
-            # MARKER_MEM_PHASE1.WAKE_ON_NOTIFY: Always try tmux wake on manual notify
-            # Previously only _auto_notify called _synapse_wake, leaving action=notify silent.
-            self._synapse_wake(target_role, message)
 
             # MARKER_205.NOTIFY_BUS: Emit notify event through EventBus → UDS daemon
             # This enables autospawn: daemon receives notify, checks tmux, spawns offline agent.
@@ -3696,11 +3531,9 @@ class TaskBoard:
                 capture_output=True, timeout=3,
             )
             if has.returncode == 0:
-                # MARKER_WAKE_LITE.ACTIONABLE_PROMPT: Always send an actionable prompt
-                # that Claude Code will execute. Raw message text gets ignored by idle agents.
-                # The full message is already in the notification inbox — wake just triggers reading it.
-                hint = f" — {message[:80]}" if message else ""
-                send_text = f"check notifications{hint}"
+                # MARKER_WAKE_LITE.TASK_ID_SIGNAL: Send task-specific wake hint if provided,
+                # otherwise fall back to "vetka session init" (full context for fresh starts).
+                send_text = message if message else "vetka session init"
                 subprocess.run(
                     ["tmux", "send-keys", "-t", session_name, send_text, "Enter"],
                     capture_output=True, timeout=3,
@@ -3765,7 +3598,6 @@ class TaskBoard:
         _ACTION_MAP = {
             self.NOTIF_TASK_VERIFIED: "merge_request",
             self.NOTIF_TASK_NEEDS_FIX: "fix",
-            self.NOTIF_MERGE_CONFLICT: "fix",
             self.NOTIF_READY_TO_MERGE: "merge_request",
             self.NOTIF_TASK_COMPLETED: "verify",
         }
@@ -3784,10 +3616,6 @@ class TaskBoard:
             # Notify owner
             if owner:
                 targets.append((owner, f"{wake_hint} QA FAIL: {title}. {extra_msg}"))
-        elif ntype == self.NOTIF_MERGE_CONFLICT:
-            # MARKER_210.MERGE_CONFLICT: Strategy conflict — notify owner, not QA fail
-            if owner:
-                targets.append((owner, f"{wake_hint} MERGE CONFLICT: {title}. {extra_msg}"))
         elif ntype == self.NOTIF_READY_TO_MERGE:
             targets.append(("Commander", f"Ready to merge: {title} [{task_id}]"))
         elif ntype == self.NOTIF_TASK_COMPLETED:
@@ -3832,14 +3660,10 @@ class TaskBoard:
             self.NOTIF_TASK_VERIFIED: ["Commander"],
             self.NOTIF_READY_TO_MERGE: ["Commander"],
             self.NOTIF_TASK_NEEDS_FIX: [],  # populated dynamically below
-            self.NOTIF_MERGE_CONFLICT: [],  # populated dynamically below
         }
         wake_roles = list(_WAKE_TARGETS.get(ntype, []))
         # Wake task owner on needs_fix so they see the QA failure
         if ntype == self.NOTIF_TASK_NEEDS_FIX and owner:
-            wake_roles.append(owner)
-        # Wake task owner on merge_conflict so they can rework the branch
-        if ntype == self.NOTIF_MERGE_CONFLICT and owner:
             wake_roles.append(owner)
         for wake_target in wake_roles:
             self._synapse_wake(wake_target, message=wake_hint)
@@ -5505,34 +5329,26 @@ class TaskBoard:
                         "merge-tree", merge_base.strip(), "main", branch, cwd=str(PROJECT_ROOT)
                     )
                     # merge-tree outputs conflict markers — check if any scoped files conflict.
-                    # MARKER_210.SNAPSHOT_CONFLICT_FIX: Parse section-by-section, tracking section type.
-                    # Only 'changed in both' sections can have conflicts. 'added in remote/local'
-                    # sections are clean additions — never flag them even if their path appears in output.
+                    # Parse section-by-section: each file's section typically starts with its path.
                     if mt_out:
                         conflicting_set: set = set()
+                        # Split output into per-file sections and check each for conflict markers
                         lines = mt_out.splitlines()
                         current_file = None
-                        in_conflict_section = False  # True only inside 'changed in both' sections
                         for line in lines:
-                            # Track section type — merge-tree separates files by section headers
-                            if line == "changed in both":
-                                in_conflict_section = True
-                                current_file = None
-                            elif line.startswith("added in ") or line.startswith("removed in "):
-                                # These sections never have conflict markers — reset tracking
-                                in_conflict_section = False
-                                current_file = None
-                            # Only detect file path in conflict-eligible sections
-                            if in_conflict_section:
-                                for sf in scoped_files:
-                                    if sf in line:
-                                        current_file = sf
-                                        break
-                            # Attribute conflict marker to current file (only if in conflict section)
-                            if current_file and in_conflict_section and (
-                                "<<<<<<" in line or "+<<<<<<" in line
-                            ):
+                            # Detect file path lines (merge-tree format varies)
+                            for sf in scoped_files:
+                                if sf in line:
+                                    current_file = sf
+                                    break
+                            # If we see conflict markers, attribute to current file
+                            if current_file and ("<<<<<<" in line or "+<<<<<<" in line):
                                 conflicting_set.add(current_file)
+                        # Fallback: if no section-based hits but global conflict exists
+                        if not conflicting_set and ("<<<<<<" in mt_out or "+<<<<<<" in mt_out):
+                            for sf in scoped_files:
+                                if sf in mt_out:
+                                    conflicting_set.add(sf)
                         conflicting = sorted(conflicting_set)
                         if conflicting:
                             _conflict_msg = (
@@ -5540,10 +5356,10 @@ class TaskBoard:
                                 f"{conflicting[:5]}. Use strategy=merge or resolve manually."
                             )
                             logger.warning("[MergeRequest] %s", _conflict_msg)
-                            # MARKER_210.MERGE_CONFLICT: Notify author — this is a strategy conflict, not QA fail
+                            # Notify Commander about conflict
                             try:
                                 self._auto_notify(
-                                    task or {}, self.NOTIF_MERGE_CONFLICT,
+                                    task or {}, self.NOTIF_TASK_NEEDS_FIX,
                                     extra_msg=_conflict_msg,
                                     source_role="merge_request",
                                 )
