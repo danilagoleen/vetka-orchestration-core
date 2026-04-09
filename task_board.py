@@ -3532,9 +3532,11 @@ class TaskBoard:
                 capture_output=True, timeout=3,
             )
             if has.returncode == 0:
-                # MARKER_WAKE_LITE.TASK_ID_SIGNAL: Send task-specific wake hint if provided,
-                # otherwise fall back to "vetka session init" (full context for fresh starts).
-                send_text = message if message else "vetka session init"
+                # MARKER_WAKE_LITE.ACTIONABLE_PROMPT: Always send an actionable prompt
+                # that Claude Code will execute. Raw message text gets ignored by idle agents.
+                # The full message is already in the notification inbox — wake just triggers reading it.
+                hint = f" — {message[:80]}" if message else ""
+                send_text = f"check notifications{hint}"
                 subprocess.run(
                     ["tmux", "send-keys", "-t", session_name, send_text, "Enter"],
                     capture_output=True, timeout=3,
