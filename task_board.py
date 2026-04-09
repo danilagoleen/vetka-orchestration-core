@@ -4779,6 +4779,36 @@ class TaskBoard:
                 _status,
             )
 
+        # MARKER_210.MERGE_AUTHORITY: Block merge if caller has no authority for task domain
+        import os as _os
+        _caller_role = _os.environ.get("VETKA_AGENT_ROLE", "").strip()
+        if _caller_role and _caller_role != "Commander":
+            try:
+                from src.services.agent_registry import get_agent_registry
+                _reg = get_agent_registry()
+                _merge_captains = (_reg.data or {}).get("merge_captains", {})
+                _task_domain = task.get("domain", "")
+                _authorized = (
+                    _merge_captains.get(_task_domain)
+                    or _merge_captains.get("default", ["Commander"])
+                )
+                if _caller_role not in _authorized:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Merge blocked: role '{_caller_role}' has no merge authority "
+                            f"for domain '{_task_domain}'. "
+                            f"Authorized: {', '.join(_authorized)}. "
+                            f"Notify the captain: vetka_task_board action=notify "
+                            f"target_role={_authorized[0]} message=\"Task ready for merge: {task_id}\""
+                        ),
+                        "merge_authority": _authorized,
+                        "caller_role": _caller_role,
+                        "task_domain": _task_domain,
+                    }
+            except Exception as _ma_err:
+                logger.debug("[MergeAuthority] Registry check failed (non-fatal): %s", _ma_err)
+
         branch = task.get("branch_name")
         # MARKER_195.21: Auto-infer branch from role via AgentRegistry
         if not branch:
