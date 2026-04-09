@@ -901,6 +901,14 @@ class TaskBoard:
         # Write to file inbox for hook-based real-time delivery
         self._write_inbox(target_role, source_role, message, notif_id)
 
+        # MARKER_210.NOTIFY_WAKE: Wake target agent via tmux on explicit notification.
+        # Without this, agent-to-agent notifications (Beta→Commander, Eta→Zeta) only
+        # write to DB/inbox but never wake the sleeping tmux session.
+        try:
+            self._synapse_wake(target_role, message=f"[{source_role}] {message[:120]}")
+        except Exception as e:
+            logger.debug(f"[Notify] Wake failed for {target_role}: {e}")
+
         logger.info(f"[Notify] {source_role} → {target_role}: {message[:80]}")
         return {
             "success": True,
