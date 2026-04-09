@@ -848,7 +848,6 @@ def calculate_surprise(content: str, context: Optional[str] = None, engram_conte
     Args:
         content: Text content to analyze
         context: Optional surrounding context for comparison
-        engram_context: Optional ENGRAM hydration context (Phase 6 raw_snippet)
 
     Returns:
         Surprise score from 0.0 (predictable) to 1.0 (highly novel)
@@ -884,24 +883,17 @@ def calculate_surprise(content: str, context: Optional[str] = None, engram_conte
     code_score = sum(1 for ind in code_indicators if ind in content) / len(code_indicators)
 
     # Compare with context if provided
-    # MARKER_MEM_PHASE6: Merge engram_context into context for hydrated surprise
+    # MARKER_MEM_PHASE5: Merge engram_context into context for hydrated surprise
     combined_context = context or ""
     if engram_context:
         combined_context = f"{combined_context} {engram_context}".strip()
 
     context_diff = 0.5
-    engram_familiarity = 0.0
     if combined_context:
         context_words = set(combined_context.lower().split())
         if context_words:
             overlap = len(unique_words & context_words) / max(len(unique_words), 1)
             context_diff = 1.0 - overlap  # Less overlap = more surprise
-
-        # MARKER_MEM_PHASE6: CAM surprise modulator — engram familiarity
-        if engram_context:
-            engram_words = set(engram_context.lower().split())
-            if engram_words:
-                engram_familiarity = len(unique_words & engram_words) / max(len(unique_words), 1)
 
     # Combine factors
     surprise = (
@@ -910,22 +902,6 @@ def calculate_surprise(content: str, context: Optional[str] = None, engram_conte
         code_score * 0.15 +
         context_diff * 0.35
     )
-
-    # PHASE6: Modulate by engram familiarity — familiar patterns get lower surprise
-    surprise *= (1.0 - 0.5 * engram_familiarity)
-
-    # PHASE6 bridge: emit event for MemorySubscriber metrics
-    if engram_familiarity > 0.1:
-        try:
-            from src.orchestration.event_bus import get_event_bus, AgentEvent
-            get_event_bus().emit(AgentEvent(
-                event_type="cam_familiarity_modulation",
-                payload={"familiarity": round(engram_familiarity, 4),
-                         "surprise_pre": round(surprise / (1.0 - 0.5 * engram_familiarity), 4),
-                         "surprise_post": round(surprise, 4)},
-            ))
-        except Exception:
-            pass  # metrics emit is best-effort
 
     return max(0.0, min(1.0, surprise))
 

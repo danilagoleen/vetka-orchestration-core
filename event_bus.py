@@ -407,56 +407,11 @@ class UDSPublisher:
 
 
 # ---------------------------------------------------------------------------
-# MARKER_MEM_PHASE6E: MemorySubscriber — in-session memory metrics tracker
-# ---------------------------------------------------------------------------
-
-class MemorySubscriber:
-    """Tracks memory operation metrics within a session.
-
-    Subscribes to task_completed and cam_familiarity_modulation events.
-    Counts debriefs with Q-answers (proxy for ENGRAM/CORTEX/AURA writes)
-    and CAM familiarity modulations from raw_snippet hydration.
-    Exposed via get_memory_subscriber() for session_init memory_health section.
-    """
-
-    def __init__(self):
-        self._tasks_completed: int = 0
-        self._debriefs_with_memory: int = 0  # tasks with ≥1 Q answer
-        self._familiarity_hits: int = 0      # cam_familiarity_modulation events
-
-    def accepts(self, event: AgentEvent) -> bool:
-        return event.event_type in ("task_completed", "cam_familiarity_modulation")
-
-    def handle(self, event: AgentEvent) -> None:
-        if event.event_type == "task_completed":
-            self._tasks_completed += 1
-            p = event.payload
-            if any(p.get(q) for q in ("q1_bugs", "q2_worked", "q3_idea",
-                                       "q4_handoff", "q5_hot_files", "q6_project")):
-                self._debriefs_with_memory += 1
-        elif event.event_type == "cam_familiarity_modulation":
-            self._familiarity_hits += 1
-
-    def get_metrics(self) -> Dict[str, Any]:
-        return {
-            "tasks_completed": self._tasks_completed,
-            "debriefs_with_memory": self._debriefs_with_memory,
-            "familiarity_hits": self._familiarity_hits,
-        }
-
-    def reset(self) -> None:
-        self._tasks_completed = 0
-        self._debriefs_with_memory = 0
-        self._familiarity_hits = 0
-
-
-# ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
 _bus: Optional[EventBus] = None
 _piggyback: Optional[PiggybackCollector] = None
-_memory_sub: Optional[MemorySubscriber] = None
 
 
 def get_event_bus() -> EventBus:
@@ -473,18 +428,6 @@ def get_piggyback_collector() -> PiggybackCollector:
     if _piggyback is None:
         _piggyback = PiggybackCollector()
     return _piggyback
-
-
-def get_memory_subscriber() -> MemorySubscriber:
-    """Get or create the module-level MemorySubscriber singleton.
-
-    MARKER_MEM_PHASE6E: Auto-subscribes to the EventBus on first call.
-    """
-    global _memory_sub
-    if _memory_sub is None:
-        _memory_sub = MemorySubscriber()
-        get_event_bus().subscribe(_memory_sub)
-    return _memory_sub
 
 
 def reset_event_bus() -> None:
@@ -512,7 +455,6 @@ def reset_event_bus() -> None:
         _bus._subscribers.clear()
         _bus = None
     _piggyback = None
-    _memory_sub = None
     logger.info("EventBus: reset complete (singletons cleared, connections closed)")
 
 
@@ -554,11 +496,6 @@ def init_event_bus(db_path: Optional[Path] = None, enable_uds: bool = True) -> E
         uds_pub = UDSPublisher()
         bus.subscribe(uds_pub)
         logger.info("EventBus: UDS publisher wired (lazy connect to %s)", UDSPublisher.DEFAULT_SOCKET_PATH)
-
-    # 5. MemorySubscriber — MARKER_MEM_PHASE6E: in-session memory metrics
-    mem_sub = get_memory_subscriber()
-    if mem_sub not in bus._subscribers:
-        bus.subscribe(mem_sub)
 
     logger.info(
         "EventBus initialized with %d subscribers", bus.subscriber_count
