@@ -3824,16 +3824,30 @@ class TaskBoard:
         )
 
         if ntype == self.NOTIF_TASK_VERIFIED:
-            # Notify owner + Commander
             if owner:
                 targets.append((owner, f"{wake_hint} Task verified: {title}"))
-            targets.append(("Commander", f"Task verified, ready to merge: {title} [{task_id}]"))
+            # MARKER_210.DOMAIN_ROUTING: Route to domain captain instead of hardcoded Commander
+            try:
+                from src.services.agent_registry import get_agent_registry
+                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+            except Exception:
+                _captains = ["Commander"]
+            for _cap in _captains:
+                if _cap != owner:  # Don't duplicate if owner is also captain
+                    targets.append((_cap, f"Task verified, ready to merge: {title} [{task_id}]"))
         elif ntype == self.NOTIF_TASK_NEEDS_FIX:
             # Notify owner
             if owner:
                 targets.append((owner, f"{wake_hint} QA FAIL: {title}. {extra_msg}"))
         elif ntype == self.NOTIF_READY_TO_MERGE:
-            targets.append(("Commander", f"Ready to merge: {title} [{task_id}]"))
+            # MARKER_210.DOMAIN_ROUTING: Route to domain captains
+            try:
+                from src.services.agent_registry import get_agent_registry
+                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+            except Exception:
+                _captains = ["Commander"]
+            for _cap in _captains:
+                targets.append((_cap, f"Ready to merge: {title} [{task_id}]"))
         elif ntype == self.NOTIF_TASK_COMPLETED:
             # Notify Commander about new completion
             targets.append(("Commander", f"Task completed by {owner}: {title} [{task_id}]"))
@@ -3871,13 +3885,19 @@ class TaskBoard:
                 )
 
         # MARKER_208.SYNAPSE_WAKE_NATIVE: Wake target agents — pure Python, no script dependency
-        _WAKE_TARGETS: Dict[str, list] = {
+        # MARKER_210.DOMAIN_ROUTING: Domain-aware wake targets
+        _WAKE_TARGETS_STATIC: Dict[str, list] = {
             self.NOTIF_TASK_COMPLETED: ["Delta"],
-            self.NOTIF_TASK_VERIFIED: ["Commander"],
-            self.NOTIF_READY_TO_MERGE: ["Commander"],
             self.NOTIF_TASK_NEEDS_FIX: [],  # populated dynamically below
         }
-        wake_roles = list(_WAKE_TARGETS.get(ntype, []))
+        wake_roles = list(_WAKE_TARGETS_STATIC.get(ntype, []))
+        # For VERIFIED and READY_TO_MERGE, wake domain captains instead of hardcoded Commander
+        if ntype in (self.NOTIF_TASK_VERIFIED, self.NOTIF_READY_TO_MERGE):
+            try:
+                from src.services.agent_registry import get_agent_registry
+                wake_roles.extend(get_agent_registry().get_domain_captains(task.get("domain", "")))
+            except Exception:
+                wake_roles.append("Commander")
         # Wake task owner on needs_fix so they see the QA failure
         if ntype == self.NOTIF_TASK_NEEDS_FIX and owner:
             wake_roles.append(owner)
