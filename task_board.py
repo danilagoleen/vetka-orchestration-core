@@ -743,6 +743,47 @@ class TaskBoard:
                         f"[TaskBoard] Migration 5 (memories) failed: {e}"
                     )
 
+        if current < 6:
+            # Migration 6: Task pins table (MARKER_MEM_PHASE8A)
+            pins_exists = self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_pins'"
+            ).fetchone()
+            if pins_exists:
+                self._set_schema_version(6)
+            else:
+                try:
+                    self.db.executescript("""
+                        CREATE TABLE IF NOT EXISTS task_pins (
+                            pin_id TEXT PRIMARY KEY,
+                            role_id TEXT NOT NULL,
+                            task_id TEXT NOT NULL,
+                            context_summary TEXT NOT NULL DEFAULT '',
+                            files_modified TEXT NOT NULL DEFAULT '[]',
+                            next_steps TEXT NOT NULL DEFAULT '',
+                            pinned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+                            UNIQUE(role_id, task_id)
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_task_pins_role ON task_pins(role_id);
+                    """)
+                    self._set_schema_version(6)
+                    logger.info(
+                        "[TaskBoard] Migration 6: task_pins table created "
+                        "(MARKER_MEM_PHASE8A)"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        logger.warning(
+                            "[TaskBoard] Migration 6 deferred — database locked"
+                        )
+                        return
+                    logger.warning(
+                        f"[TaskBoard] Migration 6 (task_pins) failed: {e}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[TaskBoard] Migration 6 (task_pins) failed: {e}"
+                    )
+
     # ==========================================
     # MARKER_199.FTS5: Full-Text Search
     # ==========================================
@@ -3005,6 +3046,12 @@ class TaskBoard:
         except Exception as e:
             logger.debug(f"[TaskBoard] ZETA domain check skipped (non-fatal): {e}")
 
+        # MARKER_PHASE8.AUTO_UNPIN_CLAIM: Auto-unpin when agent claims (resuming pinned work)
+        try:
+            self.unpin(role_id=agent_name, task_id=task_id)
+        except Exception:
+            pass
+
         logger.info(
             f"[TaskBoard] Task {task_id} claimed by {agent_name} ({agent_type})"
         )
@@ -3208,6 +3255,14 @@ class TaskBoard:
             self.NOTIF_TASK_COMPLETED,
             source_role=str(task.get("assigned_to") or ""),
         )
+
+        # MARKER_PHASE8.AUTO_UNPIN_COMPLETE: Auto-unpin when task is done
+        try:
+            _completer = str(task.get("assigned_to") or "")
+            if _completer:
+                self.unpin(role_id=_completer, task_id=task_id)
+        except Exception:
+            pass
 
         # MARKER_ZETA.D4: Warn-mode allowed_paths validation on complete
         ownership_warnings = []
@@ -3700,6 +3755,112 @@ class TaskBoard:
             return {"success": False, "error": str(e)}
 
     # ==========================================
+    # MARKER_MEM_PHASE8A: Task Pins
+    # ==========================================
+
+    def pin(
+        self,
+        role_id: str,
+        task_id: str,
+        context_summary: str = "",
+        files_modified: Optional[List[str]] = None,
+        next_steps: str = "",
+    ) -> Dict[str, Any]:
+        """Pin a task with context for quick resume after context restart.
+
+        Uses INSERT OR REPLACE (UPSERT) so re-pinning the same role+task
+        overwrites the previous pin.
+
+        Returns:
+            {"success": True, "pin_id": "pin_xxx", "task_id": task_id}
+        """
+        pin_id = f"pin_{uuid.uuid4().hex[:12]}"
+        files_json = json.dumps(files_modified or [])
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO task_pins "
+                    "(pin_id, role_id, task_id, context_summary, files_modified, next_steps, pinned_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (pin_id, role_id, task_id, context_summary, files_json, next_steps, now),
+                )
+            return {"success": True, "pin_id": pin_id, "task_id": task_id}
+        except Exception as e:
+            logger.warning(f"[TaskBoard] pin() failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def unpin(
+        self,
+        role_id: str,
+        task_id: str = "",
+    ) -> Dict[str, Any]:
+        """Remove a pinned task or all pins for a role.
+
+        If task_id is provided, deletes that specific pin.
+        If task_id is empty, deletes ALL pins for role_id.
+
+        Returns:
+            {"success": True, "unpinned": count}
+        """
+        try:
+            with self.db:
+                if task_id:
+                    cursor = self.db.execute(
+                        "DELETE FROM task_pins WHERE role_id = ? AND task_id = ?",
+                        (role_id, task_id),
+                    )
+                else:
+                    cursor = self.db.execute(
+                        "DELETE FROM task_pins WHERE role_id = ?",
+                        (role_id,),
+                    )
+                count = cursor.rowcount
+            return {"success": True, "unpinned": count}
+        except Exception as e:
+            logger.warning(f"[TaskBoard] unpin() failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_pinned_tasks(
+        self,
+        role_id: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Get pinned tasks for a role, joined with task info.
+
+        Returns list of pin dicts with task title and status,
+        ordered by pinned_at DESC.
+        """
+        try:
+            rows = self.db.execute(
+                "SELECT p.pin_id, p.role_id, p.task_id, p.context_summary, "
+                "p.files_modified, p.next_steps, p.pinned_at, "
+                "t.title, t.status "
+                "FROM task_pins p "
+                "LEFT JOIN tasks t ON p.task_id = t.id "
+                "WHERE p.role_id = ? "
+                "ORDER BY p.pinned_at DESC LIMIT ?",
+                (role_id, limit),
+            ).fetchall()
+            pins = []
+            for row in rows:
+                pins.append({
+                    "pin_id": row[0],
+                    "role_id": row[1],
+                    "task_id": row[2],
+                    "context_summary": row[3],
+                    "files_modified": json.loads(row[4]) if row[4] else [],
+                    "next_steps": row[5],
+                    "pinned_at": row[6],
+                    "task_title": row[7] or "",
+                    "task_status": row[8] or "unknown",
+                })
+            return pins
+        except Exception as e:
+            logger.warning(f"[TaskBoard] get_pinned_tasks() failed: {e}")
+            return []
+
+    # ==========================================
     # MARKER_208.SYNAPSE_WAKE_NATIVE
     # ==========================================
 
@@ -3901,6 +4062,17 @@ class TaskBoard:
         # Wake task owner on needs_fix so they see the QA failure
         if ntype == self.NOTIF_TASK_NEEDS_FIX and owner:
             wake_roles.append(owner)
+        # MARKER_PHASE8.DOMAIN_CAPTAIN_WAKE: Wake domain captain on QA failure
+        if ntype == self.NOTIF_TASK_NEEDS_FIX:
+            try:
+                from src.services.agent_registry import get_agent_registry
+                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+                for _cap in _captains:
+                    if _cap not in wake_roles:
+                        wake_roles.append(_cap)
+            except Exception:
+                if "Commander" not in wake_roles:
+                    wake_roles.append("Commander")
         for wake_target in wake_roles:
             self._synapse_wake(wake_target, message=wake_hint)
 
