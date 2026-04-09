@@ -688,6 +688,60 @@ class TaskBoard:
                 except Exception as e:
                     logger.warning(f"[TaskBoard] Migration 4 (audit_log) failed: {e}")
 
+        if current < 5:
+            # Migration 5: Debriefs table — hybrid MD/SQLite (MARKER_MEM_PHASE3)
+            debrief_exists = self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='debriefs'"
+            ).fetchone()
+            if debrief_exists:
+                self._set_schema_version(5)
+            else:
+                try:
+                    self.db.executescript("""
+                        CREATE TABLE IF NOT EXISTS debriefs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            task_id TEXT,
+                            agent_id TEXT NOT NULL,
+                            session_id TEXT DEFAULT '',
+                            model_tier TEXT DEFAULT '',
+                            domain TEXT DEFAULT '',
+                            q1_bugs TEXT DEFAULT '',
+                            q2_worked TEXT DEFAULT '',
+                            q3_idea TEXT DEFAULT '',
+                            q4_handoff TEXT DEFAULT '',
+                            q5_hot_files TEXT DEFAULT '',
+                            q6_project TEXT DEFAULT '',
+                            subsystems TEXT DEFAULT '[]',
+                            created_at TEXT DEFAULT (datetime('now'))
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_debriefs_task ON debriefs(task_id);
+                        CREATE INDEX IF NOT EXISTS idx_debriefs_agent ON debriefs(agent_id);
+                        CREATE INDEX IF NOT EXISTS idx_debriefs_created ON debriefs(created_at);
+
+                        CREATE VIRTUAL TABLE IF NOT EXISTS debriefs_fts USING fts5(
+                            task_id UNINDEXED,
+                            agent_id UNINDEXED,
+                            q1_bugs,
+                            q2_worked,
+                            q3_idea,
+                            q4_handoff,
+                            q5_hot_files,
+                            q6_project,
+                            tokenize='unicode61'
+                        );
+                    """)
+                    self._set_schema_version(5)
+                    logger.info("[TaskBoard] Migration 5: debriefs + debriefs_fts tables created")
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        logger.warning(
+                            "[TaskBoard] Migration 5 deferred — database locked"
+                        )
+                        return
+                    logger.warning(f"[TaskBoard] Migration 5 (debriefs) failed: {e}")
+                except Exception as e:
+                    logger.warning(f"[TaskBoard] Migration 5 (debriefs) failed: {e}")
+
     # ==========================================
     # MARKER_199.FTS5: Full-Text Search
     # ==========================================
@@ -827,6 +881,112 @@ class TaskBoard:
             return results
         except Exception as e:
             logger.warning(f"[FTS5] Search failed for query '{query}': {e}")
+            return []
+
+    # ==========================================
+    # MARKER_MEM_PHASE3: Debriefs — Hybrid MD/SQLite
+    # ==========================================
+
+    def save_debrief(self, task_id: str, agent_id: str, **kwargs) -> bool:
+        """Save structured debrief data to debriefs table.
+
+        Called from _inject_debrief after action=complete.
+        MD write continues separately via role_memory_writer (archive).
+        """
+        try:
+            fields = {
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "session_id": kwargs.get("session_id", ""),
+                "model_tier": kwargs.get("model_tier", ""),
+                "domain": kwargs.get("domain", ""),
+                "q1_bugs": kwargs.get("q1_bugs", ""),
+                "q2_worked": kwargs.get("q2_worked", ""),
+                "q3_idea": kwargs.get("q3_idea", ""),
+                "q4_handoff": kwargs.get("q4_handoff", ""),
+                "q5_hot_files": kwargs.get("q5_hot_files", ""),
+                "q6_project": kwargs.get("q6_project", ""),
+                "subsystems": kwargs.get("subsystems", "[]"),
+            }
+            self.db.execute(
+                "INSERT INTO debriefs (task_id, agent_id, session_id, model_tier, domain, "
+                "q1_bugs, q2_worked, q3_idea, q4_handoff, q5_hot_files, q6_project, subsystems) "
+                "VALUES (:task_id, :agent_id, :session_id, :model_tier, :domain, "
+                ":q1_bugs, :q2_worked, :q3_idea, :q4_handoff, :q5_hot_files, :q6_project, :subsystems)",
+                fields,
+            )
+            # Index in FTS5
+            self.db.execute(
+                "INSERT INTO debriefs_fts (task_id, agent_id, q1_bugs, q2_worked, q3_idea, "
+                "q4_handoff, q5_hot_files, q6_project) "
+                "VALUES (:task_id, :agent_id, :q1_bugs, :q2_worked, :q3_idea, "
+                ":q4_handoff, :q5_hot_files, :q6_project)",
+                fields,
+            )
+            self.db.commit()
+            logger.debug("[Debriefs] Saved debrief for task %s by %s", task_id, agent_id)
+            return True
+        except Exception as e:
+            logger.warning("[Debriefs] Failed to save debrief for %s: %s", task_id, e)
+            return False
+
+    def query_debriefs(
+        self,
+        agent_id: str = "",
+        task_id: str = "",
+        domain: str = "",
+        query: str = "",
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Query debriefs by agent, task, domain, or FTS5 text search.
+
+        Returns list of structured debrief dicts.
+        """
+        try:
+            if query and query.strip():
+                # FTS5 search
+                import re as _re_fts
+                _sanitized = _re_fts.sub(r'[^\w\s"*]', " ", query).strip()
+                if not _sanitized:
+                    return []
+                rows = self.db.execute(
+                    "SELECT d.* FROM debriefs d "
+                    "JOIN debriefs_fts f ON d.task_id = f.task_id AND d.agent_id = f.agent_id "
+                    "WHERE debriefs_fts MATCH ? ORDER BY d.created_at DESC LIMIT ?",
+                    (_sanitized, limit),
+                ).fetchall()
+            else:
+                # Structured query
+                conditions = []
+                params = []
+                if agent_id:
+                    conditions.append("agent_id = ?")
+                    params.append(agent_id)
+                if task_id:
+                    conditions.append("task_id = ?")
+                    params.append(task_id)
+                if domain:
+                    conditions.append("domain = ?")
+                    params.append(domain)
+                where = " AND ".join(conditions) if conditions else "1=1"
+                params.append(limit)
+                rows = self.db.execute(
+                    f"SELECT * FROM debriefs WHERE {where} ORDER BY created_at DESC LIMIT ?",
+                    params,
+                ).fetchall()
+
+            columns = [
+                "id", "task_id", "agent_id", "session_id", "model_tier", "domain",
+                "q1_bugs", "q2_worked", "q3_idea", "q4_handoff", "q5_hot_files",
+                "q6_project", "subsystems", "created_at",
+            ]
+            results = []
+            for row in rows:
+                entry = dict(zip(columns, row))
+                results.append(entry)
+            return results
+        except Exception as e:
+            logger.warning("[Debriefs] Query failed: %s", e)
             return []
 
     def get_debrief_skipped_tasks(self, limit: int = 10) -> List[Dict[str, Any]]:
