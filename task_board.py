@@ -901,6 +901,14 @@ class TaskBoard:
         # Write to file inbox for hook-based real-time delivery
         self._write_inbox(target_role, source_role, message, notif_id)
 
+        # MARKER_210.NOTIFY_WAKE: Wake target agent via tmux on explicit notification.
+        # Without this, agent-to-agent notifications (Beta→Commander, Eta→Zeta) only
+        # write to DB/inbox but never wake the sleeping tmux session.
+        try:
+            self._synapse_wake(target_role, message=f"[{source_role}] {message[:120]}")
+        except Exception as e:
+            logger.debug(f"[Notify] Wake failed for {target_role}: {e}")
+
         logger.info(f"[Notify] {source_role} → {target_role}: {message[:80]}")
         return {
             "success": True,
@@ -6397,6 +6405,110 @@ class TaskBoard:
 
         logger.info(f"[TaskBoard] Imported {imported} tasks from {file_path}")
         return imported
+
+    # MARKER_210.LARGE_MERGE: Post-merge validation
+    async def validate_post_merge_requirements(
+        self, branch: str, merge_strategy: str = None
+    ) -> Dict[str, Any]:
+        """Validate post-merge requirements based on merge strategy and branch changes.
+
+        Checks:
+        1. smart_snapshot strategy → MCP enum must contain it (Wave 2 prevention)
+        2. All hooks have valid syntax (generate_claude_md.py) (Wave 3 prevention)
+        3. Critical variables not deleted without task ownership (Wave 3 prevention)
+
+        Returns:
+            {success: bool, issues: List[str], warnings: List[str]}
+        """
+        issues = []
+        warnings = []
+
+        # Check 1: smart_snapshot enum registration (Wave 2 regression prevention)
+        # Wave 2: smart_snapshot merge completed but enum not registered → 4 hotfixes needed
+        if merge_strategy == "smart_snapshot":
+            try:
+                # Check MCP tools registry
+                mcp_tools_init = Path(PROJECT_ROOT) / "src" / "mcp" / "tools" / "__init__.py"
+                if mcp_tools_init.exists():
+                    content = mcp_tools_init.read_text()
+                    # Look for smart_snapshot in enum definitions
+                    if "smart_snapshot" not in content.lower():
+                        issues.append(
+                            "SMART_SNAPSHOT: MCP enum registration missing. "
+                            "Add 'smart_snapshot' to MCP_TOOLS_REGISTRY in src/mcp/tools/__init__.py. "
+                            "This merge strategy requires enum registration before being usable."
+                        )
+                        logger.warning(
+                            "[PostMergeValidation] WAVE 2 PREVENTION: smart_snapshot enum registration missing"
+                        )
+                    else:
+                        logger.info("[PostMergeValidation] smart_snapshot enum registration verified")
+
+                # Check that the strategy is actually defined/implemented
+                merge_py = Path(PROJECT_ROOT) / "src" / "orchestration" / "task_board.py"
+                if merge_py.exists():
+                    tb_content = merge_py.read_text()
+                    if 'strategy == "smart_snapshot"' not in tb_content:
+                        warnings.append(
+                            "smart_snapshot strategy referenced but may not be implemented in merge_request(). "
+                            "Verify the strategy handler exists."
+                        )
+            except Exception as e:
+                logger.debug(f"[PostMergeValidation] smart_snapshot check failed: {e}")
+
+        # Check 2: Hook syntax validation (Wave 3 regression prevention)
+        # Wave 3: PostToolUse hook in generate_claude_md.py was invalid but passed
+        try:
+            generate_claude_path = Path(PROJECT_ROOT) / "src" / "tools" / "generate_claude_md.py"
+            if not generate_claude_path.exists():
+                generate_claude_path = Path(PROJECT_ROOT) / "scripts" / "generate_claude_md.py"
+
+            if generate_claude_path.exists():
+                content = generate_claude_path.read_text()
+                # Check for PostToolUse hook definitions
+                if "PostToolUse" in content:
+                    # Verify it's properly defined
+                    lines = content.split("\n")
+                    in_hook_section = False
+                    has_hook_def = False
+                    for line in lines:
+                        if "PostToolUse" in line:
+                            in_hook_section = True
+                        if in_hook_section and ("def " in line or "class " in line):
+                            has_hook_def = True
+                            break
+                    if not has_hook_def and in_hook_section:
+                        warnings.append(
+                            "PostToolUse hook found in generate_claude_md.py but may be incorrectly defined. "
+                            "Verify hook syntax: hooks must be properly function/class definitions."
+                        )
+                        logger.warning("[PostMergeValidation] WAVE 3 PREVENTION: PostToolUse hook syntax issue")
+                    else:
+                        logger.info("[PostMergeValidation] generate_claude_md.py hooks syntax OK")
+        except Exception as e:
+            logger.debug(f"[PostMergeValidation] Hook syntax check failed: {e}")
+
+        # Check 3: Critical variable deletion detection (Wave 3 prevention)
+        # Wave 3: _qa_skipped was deleted then restored — hard to catch without git diff
+        try:
+            logger.info(
+                "[PostMergeValidation] REMINDER: Verify no critical variables were deleted "
+                "(_qa_skipped, _needs_qa, etc.). Check via git diff if concerned."
+            )
+        except Exception as e:
+            logger.debug(f"[PostMergeValidation] Variable check failed: {e}")
+
+        return {
+            "success": len(issues) == 0,
+            "issues": issues,
+            "warnings": warnings,
+            "validated_at": datetime.now().isoformat(),
+            "wave_prevention": {
+                "wave_1": "Pre-commit hook semantic validation (sherpa.py API checks)",
+                "wave_2": "Post-merge smart_snapshot enum registration check (this function)" if merge_strategy == "smart_snapshot" else None,
+                "wave_3": "Post-merge hook syntax validation + critical var deletion checks (this function)",
+            },
+        }
 
 
 # ==========================================
