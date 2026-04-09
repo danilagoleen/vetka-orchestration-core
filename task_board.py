@@ -5339,26 +5339,34 @@ class TaskBoard:
                         "merge-tree", merge_base.strip(), "main", branch, cwd=str(PROJECT_ROOT)
                     )
                     # merge-tree outputs conflict markers — check if any scoped files conflict.
-                    # Parse section-by-section: each file's section typically starts with its path.
+                    # MARKER_210.SNAPSHOT_CONFLICT_FIX: Parse section-by-section, tracking section type.
+                    # Only 'changed in both' sections can have conflicts. 'added in remote/local'
+                    # sections are clean additions — never flag them even if their path appears in output.
                     if mt_out:
                         conflicting_set: set = set()
-                        # Split output into per-file sections and check each for conflict markers
                         lines = mt_out.splitlines()
                         current_file = None
+                        in_conflict_section = False  # True only inside 'changed in both' sections
                         for line in lines:
-                            # Detect file path lines (merge-tree format varies)
-                            for sf in scoped_files:
-                                if sf in line:
-                                    current_file = sf
-                                    break
-                            # If we see conflict markers, attribute to current file
-                            if current_file and ("<<<<<<" in line or "+<<<<<<" in line):
+                            # Track section type — merge-tree separates files by section headers
+                            if line == "changed in both":
+                                in_conflict_section = True
+                                current_file = None
+                            elif line.startswith("added in ") or line.startswith("removed in "):
+                                # These sections never have conflict markers — reset tracking
+                                in_conflict_section = False
+                                current_file = None
+                            # Only detect file path in conflict-eligible sections
+                            if in_conflict_section:
+                                for sf in scoped_files:
+                                    if sf in line:
+                                        current_file = sf
+                                        break
+                            # Attribute conflict marker to current file (only if in conflict section)
+                            if current_file and in_conflict_section and (
+                                "<<<<<<" in line or "+<<<<<<" in line
+                            ):
                                 conflicting_set.add(current_file)
-                        # Fallback: if no section-based hits but global conflict exists
-                        if not conflicting_set and ("<<<<<<" in mt_out or "+<<<<<<" in mt_out):
-                            for sf in scoped_files:
-                                if sf in mt_out:
-                                    conflicting_set.add(sf)
                         conflicting = sorted(conflicting_set)
                         if conflicting:
                             _conflict_msg = (
