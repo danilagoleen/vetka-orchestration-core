@@ -3048,7 +3048,9 @@ class TaskBoard:
 
         # MARKER_PHASE8.AUTO_UNPIN_CLAIM: Auto-unpin when agent claims (resuming pinned work)
         try:
-            self.unpin(role_id=agent_name, task_id=task_id)
+            unpin_result = self.unpin(role_id=agent_name, task_id=task_id)
+            if unpin_result.get("unpinned", 0) > 0:
+                logger.info(f"[TaskBoard] Auto-unpinned {agent_name} from {task_id} on claim")
         except Exception:
             pass
 
@@ -3840,6 +3842,18 @@ class TaskBoard:
                 self.db.commit()
             except Exception as evict_err:
                 logger.debug("[TaskBoard] pin eviction failed: %s", evict_err)
+            # MARKER_PHASE8.PIN_EVENT: Emit pin_handoff event for metrics (8l)
+            try:
+                if hasattr(self, 'event_bus') and self.event_bus:
+                    from src.orchestration.event_bus import AgentEvent
+                    self.event_bus.emit(AgentEvent(
+                        event_type="pin_handoff",
+                        source_agent=role_id,
+                        payload={"action": "pin", "task_id": task_id, "pin_id": pin_id},
+                        tags=["pin_handoff"],
+                    ))
+            except Exception:
+                pass
             return {"success": True, "pin_id": pin_id, "task_id": task_id}
         except Exception as e:
             logger.warning(f"[TaskBoard] pin() failed: {e}")
@@ -3871,6 +3885,18 @@ class TaskBoard:
                         (role_id,),
                     )
                 count = cursor.rowcount
+            # MARKER_PHASE8.UNPIN_EVENT: Emit unpin event for metrics (8l)
+            try:
+                if hasattr(self, 'event_bus') and self.event_bus and count > 0:
+                    from src.orchestration.event_bus import AgentEvent
+                    self.event_bus.emit(AgentEvent(
+                        event_type="pin_handoff",
+                        source_agent=role_id,
+                        payload={"action": "unpin", "task_id": task_id, "unpinned": count},
+                        tags=["pin_handoff"],
+                    ))
+            except Exception:
+                pass
             return {"success": True, "unpinned": count}
         except Exception as e:
             logger.warning(f"[TaskBoard] unpin() failed: {e}")
