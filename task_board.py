@@ -3315,7 +3315,9 @@ class TaskBoard:
         except Exception as e:
             logger.debug(f"[TaskBoard] Auto-debrief check skipped (non-fatal): {e}")
 
-        # MARKER_PHASE8.EXHAUSTION_GUARD_V2: Session-scoped counter.
+        # MARKER_PHASE8.EXHAUSTION_GUARD_V4: Session-scoped counter.
+        # (was V2) Upgraded DEBUG log to annotate session source (contextvar vs
+        # fallback vs none) so bucket mismatches are diagnosable from logs.
         # Source of truth: SessionActionTracker.tasks_completed for the
         # current MCP session (per-process, reset on spawn). Replaces the
         # prior date-based SQL count which ignored session boundaries and
@@ -3336,12 +3338,17 @@ class TaskBoard:
                         _completed_count = int(getattr(_session, "tasks_completed", 0) or 0)
                 except Exception as _sess_err:
                     logger.debug("[TaskBoard] session counter lookup failed: %s", _sess_err)
-                logger.debug(
-                    "[TaskBoard] exhaustion guard check: session=%s role=%s completed=%s",
-                    _session_id, _completer_role, _completed_count
+                # MARKER_PHASE8.EXHAUSTION_GUARD_V4: annotate session source
+                try:
+                    from src.mcp.context_vars import session_context as _sc
+                    _ctx_sid_raw = _sc.get()
+                except Exception:
+                    _ctx_sid_raw = None
+                _session_source = (
+                    "contextvar" if (_ctx_sid_raw and _ctx_sid_raw != "default")
+                    else ("fallback" if _session_id != "default" else "none")
                 )
-
-                # Load threshold from registry
+                # Load threshold early so the debug log can include it
                 _threshold = 15  # default
                 try:
                     from src.services.agent_registry import get_agent_registry
@@ -3352,6 +3359,15 @@ class TaskBoard:
                     _threshold = _thresholds.get(_model_tier, _thresholds.get("default", 15))
                 except Exception:
                     pass
+                logger.debug(
+                    "[exhaustion_guard] role=%s session=%s (from:%s) completed=%d/threshold=%d would_warn=%s",
+                    _completer_role,
+                    _session_id,
+                    _session_source,
+                    _completed_count,
+                    _threshold,
+                    "yes" if _completed_count >= _threshold else "no",
+                )
 
                 if _completed_count >= _threshold:
                     result["exhaustion_warning"] = {
