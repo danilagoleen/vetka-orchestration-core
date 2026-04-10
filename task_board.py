@@ -3325,6 +3325,7 @@ class TaskBoard:
             _completer_role = str(task.get("assigned_to") or "")
             if _completer_role:
                 _completed_count = 0
+                _session_id = "default"
                 try:
                     from src.mcp.context_vars import session_context
                     from src.services.session_tracker import get_session_tracker
@@ -3335,6 +3336,10 @@ class TaskBoard:
                         _completed_count = int(getattr(_session, "tasks_completed", 0) or 0)
                 except Exception as _sess_err:
                     logger.debug("[TaskBoard] session counter lookup failed: %s", _sess_err)
+                logger.debug(
+                    "[TaskBoard] exhaustion guard check: session=%s role=%s completed=%s",
+                    _session_id, _completer_role, _completed_count
+                )
 
                 # Load threshold from registry
                 _threshold = 15  # default
