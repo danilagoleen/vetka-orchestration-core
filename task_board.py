@@ -3313,6 +3313,48 @@ class TaskBoard:
         except Exception as e:
             logger.debug(f"[TaskBoard] Auto-debrief check skipped (non-fatal): {e}")
 
+        # MARKER_PHASE8.EXHAUSTION_GUARD: Check task counter against model tier threshold
+        try:
+            _completer_role = str(task.get("assigned_to") or "")
+            if _completer_role:
+                # Count tasks completed by this agent today (proxy for session)
+                _today = datetime.now().strftime("%Y-%m-%d")
+                _completed_count = self.db.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? AND status IN ('done', 'done_worktree', 'done_main') AND completed_at LIKE ?",
+                    (_completer_role, f"{_today}%")
+                ).fetchone()[0]
+
+                # Load threshold from registry
+                _threshold = 15  # default
+                try:
+                    from src.services.agent_registry import get_agent_registry
+                    _reg = get_agent_registry()
+                    _role_obj = _reg.get_role(_completer_role)
+                    _model_tier = _role_obj.model_tier if _role_obj else "sonnet"
+                    _thresholds = _reg._raw_data.get("handoff_thresholds", {})
+                    _threshold = _thresholds.get(_model_tier, _thresholds.get("default", 15))
+                except Exception:
+                    pass
+
+                if _completed_count >= _threshold:
+                    result["exhaustion_warning"] = {
+                        "tasks_completed": _completed_count,
+                        "threshold": _threshold,
+                        "recommendation": "Pin current work and request respawn",
+                        "handoff_suggested": True,
+                        "debrief_requested": True,
+                        "pin_template": {
+                            "action": "pin",
+                            "role": _completer_role,
+                            "task_id": "<next_task_id>",
+                            "context_summary": "<what you were doing>",
+                            "files_modified": "<files you touched>",
+                            "next_steps": "<what to do next>",
+                        }
+                    }
+        except Exception as _exhaust_err:
+            logger.debug("[TaskBoard] exhaustion guard failed: %s", _exhaust_err)
+
         return result
 
     # ------------------------------------------------------------------
@@ -3785,6 +3827,19 @@ class TaskBoard:
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (pin_id, role_id, task_id, context_summary, files_json, next_steps, now),
                 )
+            # MARKER_PHASE8.PIN_EVICTION: LRU eviction — keep max 5 pins per role
+            try:
+                self.db.execute("""
+                    DELETE FROM task_pins WHERE pin_id IN (
+                        SELECT pin_id FROM task_pins
+                        WHERE role_id = ?
+                        ORDER BY pinned_at DESC
+                        LIMIT -1 OFFSET 5
+                    )
+                """, (role_id,))
+                self.db.commit()
+            except Exception as evict_err:
+                logger.debug("[TaskBoard] pin eviction failed: %s", evict_err)
             return {"success": True, "pin_id": pin_id, "task_id": task_id}
         except Exception as e:
             logger.warning(f"[TaskBoard] pin() failed: {e}")
