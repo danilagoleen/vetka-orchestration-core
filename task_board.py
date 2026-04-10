@@ -5387,21 +5387,33 @@ class TaskBoard:
 
         # Step 2: Get commits to merge (if not specified, get all ahead of main)
         if not commits:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "git",
-                    "log",
-                    "--oneline",
-                    f"main..{branch}",
-                    cwd=str(PROJECT_ROOT),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+            # MARKER_213.SCOPE_FIX: Prefer task.commit_hash over branch walk
+            # to prevent picking up stale unmerged commits from prior sessions.
+            # Fixes 5 live incidents (tb_1775799857 evidence log).
+            _commit_hash = task.get("commit_hash")
+            if _commit_hash:
+                commits = [_commit_hash]
+                logger.info(
+                    f"[MergeRequest] Using explicit task.commit_hash={_commit_hash} "
+                    f"(not full branch walk)"
                 )
-                stdout, _ = await proc.communicate()
-                log_lines = stdout.decode().strip().split("\n")
-                commits = [line.split()[0] for line in log_lines if line.strip()]
-            except Exception:
-                pass
+            else:
+                # Legacy fallback: full branch walk (only when no commit_hash recorded)
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "git",
+                        "log",
+                        "--oneline",
+                        f"main..{branch}",
+                        cwd=str(PROJECT_ROOT),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, _ = await proc.communicate()
+                    log_lines = stdout.decode().strip().split("\n")
+                    commits = [line.split()[0] for line in log_lines if line.strip()]
+                except Exception:
+                    pass
 
         if not commits:
             return {
@@ -5757,9 +5769,36 @@ class TaskBoard:
                 # 4. Abort + notify on conflict instead of silent overwrite
 
                 # Step 1: Get all files changed on branch vs main
-                rc, diff_out, _ = await _git(
-                    "diff", "--name-only", f"main..{branch}", cwd=str(PROJECT_ROOT)
-                )
+                # MARKER_213.SCOPE_FIX: Scope diff to task.commit_hash when available.
+                # Without this, we diff the whole main..branch range and pick up
+                # stale files from unrelated prior unmerged commits. Fixes 5 live
+                # incidents (tb_1775799857 evidence log).
+                _task_commit = task.get("commit_hash") if task else None
+                if _task_commit:
+                    diff_ref_a = f"{_task_commit}^"
+                    diff_ref_b = _task_commit
+                    logger.info(
+                        f"[MergeRequest] smart_snapshot: scoping diff to "
+                        f"{diff_ref_a}..{diff_ref_b} (task.commit_hash)"
+                    )
+                    rc, diff_out, _err = await _git(
+                        "diff", "--name-only", f"{diff_ref_a}..{diff_ref_b}",
+                        cwd=str(PROJECT_ROOT),
+                    )
+                    if rc != 0:
+                        # Fallback: merge commit (no single parent) or other error
+                        logger.warning(
+                            f"[MergeRequest] smart_snapshot: task.commit_hash diff failed "
+                            f"({_err}), falling back to main..{branch}"
+                        )
+                        rc, diff_out, _ = await _git(
+                            "diff", "--name-only", f"main..{branch}",
+                            cwd=str(PROJECT_ROOT),
+                        )
+                else:
+                    rc, diff_out, _ = await _git(
+                        "diff", "--name-only", f"main..{branch}", cwd=str(PROJECT_ROOT)
+                    )
                 if rc != 0 or not diff_out:
                     return {
                         "success": False,
