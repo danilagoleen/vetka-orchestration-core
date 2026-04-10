@@ -1001,7 +1001,7 @@ class TaskBoard:
         # Without this, agent-to-agent notifications (Beta→Commander, Eta→Zeta) only
         # write to DB/inbox but never wake the sleeping tmux session.
         try:
-            self._synapse_wake(target_role, message=f"[{source_role}] {message[:120]}")
+            self._synapse_wake(target_role, message=self._build_wake_beacon(notif_id, source_role, target_role, message))
         except Exception as e:
             logger.debug(f"[Notify] Wake failed for {target_role}: {e}")
 
@@ -3521,7 +3521,7 @@ class TaskBoard:
             # Bug: notify() wrote to DB/signal but never called _synapse_wake().
             # Only send_notification() had the wake call. This caused Delta wake regression.
             try:
-                self._synapse_wake(target_role, message=f"[{source_role}] {message[:120]}")
+                self._synapse_wake(target_role, message=self._build_wake_beacon(notif_id, source_role, target_role, message))
             except Exception as wake_err:
                 logger.debug("[TaskBoard] notify wake failed for %s: %s", target_role, wake_err)
 
@@ -3955,8 +3955,22 @@ class TaskBoard:
     # MARKER_208.SYNAPSE_WAKE_NATIVE
     # ==========================================
 
-    _WAKE_COOLDOWN_SECS = 30
+    _WAKE_COOLDOWN_SECS = 5  # MARKER_213.A2A_BEACON: reduced from 30s — beacons are short, debounce should not drop multi-part dispatches
     _WAKE_LOG = "/tmp/synapse_wake_log.jsonl"
+
+    def _build_wake_beacon(self, notif_id: str, source_role: str, target_role: str, message: str) -> str:
+        """MARKER_213.A2A_BEACON: Build short wake beacon instead of truncated body.
+
+        Format: [NOTIF] {id} | {src}→{tgt} | "{first 60 chars}..." | Full: vetka_task_board action=notifications role={tgt}
+        Max length ~200 chars. Agent retrieves full body from inbox via the shown command.
+        """
+        preview = message[:60].replace("\n", " ").replace("\r", " ")
+        ellipsis = "..." if len(message) > 60 else ""
+        return (
+            f"[NOTIF] {notif_id} | {source_role}→{target_role} | "
+            f'"{preview}{ellipsis}" | '
+            f"Full: vetka_task_board action=notifications role={target_role}"
+        )
 
     @staticmethod
     def _wake_log(role: str, method: str, message: str) -> None:
