@@ -3315,16 +3315,26 @@ class TaskBoard:
         except Exception as e:
             logger.debug(f"[TaskBoard] Auto-debrief check skipped (non-fatal): {e}")
 
-        # MARKER_PHASE8.EXHAUSTION_GUARD: Check task counter against model tier threshold
+        # MARKER_PHASE8.EXHAUSTION_GUARD_V2: Session-scoped counter.
+        # Source of truth: SessionActionTracker.tasks_completed for the
+        # current MCP session (per-process, reset on spawn). Replaces the
+        # prior date-based SQL count which ignored session boundaries and
+        # broke across midnight / respawn / cross-CLI. See
+        # docs/200_taskboard_forever/ARCHITECTURE_SESSION_EXHAUSTION_COUNTER.md
         try:
             _completer_role = str(task.get("assigned_to") or "")
             if _completer_role:
-                # Count tasks completed by this agent today (proxy for session)
-                _today = datetime.now().strftime("%Y-%m-%d")
-                _completed_count = self.db.execute(
-                    "SELECT COUNT(*) FROM tasks WHERE assigned_to = ? AND status IN ('done', 'done_worktree', 'done_main') AND completed_at LIKE ?",
-                    (_completer_role, f"{_today}%")
-                ).fetchone()[0]
+                _completed_count = 0
+                try:
+                    from src.mcp.context_vars import session_context
+                    from src.services.session_tracker import get_session_tracker
+                    _session_id = session_context.get() or "default"
+                    _tracker = get_session_tracker()
+                    _session = _tracker.get_session(_session_id)
+                    if _session is not None:
+                        _completed_count = int(getattr(_session, "tasks_completed", 0) or 0)
+                except Exception as _sess_err:
+                    logger.debug("[TaskBoard] session counter lookup failed: %s", _sess_err)
 
                 # Load threshold from registry
                 _threshold = 15  # default
