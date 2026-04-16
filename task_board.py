@@ -735,13 +735,9 @@ class TaskBoard:
                             "[TaskBoard] Migration 5 deferred — database locked"
                         )
                         return
-                    logger.warning(
-                        f"[TaskBoard] Migration 5 (memories) failed: {e}"
-                    )
+                    logger.warning(f"[TaskBoard] Migration 5 (memories) failed: {e}")
                 except Exception as e:
-                    logger.warning(
-                        f"[TaskBoard] Migration 5 (memories) failed: {e}"
-                    )
+                    logger.warning(f"[TaskBoard] Migration 5 (memories) failed: {e}")
 
         if current < 6:
             # Migration 6: Task pins table (MARKER_MEM_PHASE8A)
@@ -776,13 +772,9 @@ class TaskBoard:
                             "[TaskBoard] Migration 6 deferred — database locked"
                         )
                         return
-                    logger.warning(
-                        f"[TaskBoard] Migration 6 (task_pins) failed: {e}"
-                    )
+                    logger.warning(f"[TaskBoard] Migration 6 (task_pins) failed: {e}")
                 except Exception as e:
-                    logger.warning(
-                        f"[TaskBoard] Migration 6 (task_pins) failed: {e}"
-                    )
+                    logger.warning(f"[TaskBoard] Migration 6 (task_pins) failed: {e}")
 
     # ==========================================
     # MARKER_199.FTS5: Full-Text Search
@@ -1001,7 +993,12 @@ class TaskBoard:
         # Without this, agent-to-agent notifications (Beta→Commander, Eta→Zeta) only
         # write to DB/inbox but never wake the sleeping tmux session.
         try:
-            self._synapse_wake(target_role, message=self._build_wake_beacon(notif_id, source_role, target_role, message))
+            self._synapse_wake(
+                target_role,
+                message=self._build_wake_beacon(
+                    notif_id, source_role, target_role, message
+                ),
+            )
         except Exception as e:
             logger.debug(f"[Notify] Wake failed for {target_role}: {e}")
 
@@ -2193,6 +2190,9 @@ class TaskBoard:
                         status="scout_recon",
                         scout_context=_scout_ctx,
                         implementation_hints=_hints,
+                        priority=1
+                        if task_payload.get("project_lane") == "press"
+                        else None,
                     )
                     logger.info(
                         "[TaskBoard] Scout found %d markers for %s → scout_recon",
@@ -3050,7 +3050,9 @@ class TaskBoard:
         try:
             unpin_result = self.unpin(role_id=agent_name, task_id=task_id)
             if unpin_result.get("unpinned", 0) > 0:
-                logger.info(f"[TaskBoard] Auto-unpinned {agent_name} from {task_id} on claim")
+                logger.info(
+                    f"[TaskBoard] Auto-unpinned {agent_name} from {task_id} on claim"
+                )
         except Exception:
             pass
 
@@ -3331,32 +3333,42 @@ class TaskBoard:
                 try:
                     from src.mcp.context_vars import session_context
                     from src.services.session_tracker import get_session_tracker
+
                     _session_id = session_context.get() or "default"
                     _tracker = get_session_tracker()
                     _session = _tracker.get_session(_session_id)
                     if _session is not None:
-                        _completed_count = int(getattr(_session, "tasks_completed", 0) or 0)
+                        _completed_count = int(
+                            getattr(_session, "tasks_completed", 0) or 0
+                        )
                 except Exception as _sess_err:
-                    logger.debug("[TaskBoard] session counter lookup failed: %s", _sess_err)
+                    logger.debug(
+                        "[TaskBoard] session counter lookup failed: %s", _sess_err
+                    )
                 # MARKER_PHASE8.EXHAUSTION_GUARD_V4: annotate session source
                 try:
                     from src.mcp.context_vars import session_context as _sc
+
                     _ctx_sid_raw = _sc.get()
                 except Exception:
                     _ctx_sid_raw = None
                 _session_source = (
-                    "contextvar" if (_ctx_sid_raw and _ctx_sid_raw != "default")
+                    "contextvar"
+                    if (_ctx_sid_raw and _ctx_sid_raw != "default")
                     else ("fallback" if _session_id != "default" else "none")
                 )
                 # Load threshold early so the debug log can include it
                 _threshold = 15  # default
                 try:
                     from src.services.agent_registry import get_agent_registry
+
                     _reg = get_agent_registry()
                     _role_obj = _reg.get_role(_completer_role)
                     _model_tier = _role_obj.model_tier if _role_obj else "sonnet"
                     _thresholds = _reg._raw_data.get("handoff_thresholds", {})
-                    _threshold = _thresholds.get(_model_tier, _thresholds.get("default", 15))
+                    _threshold = _thresholds.get(
+                        _model_tier, _thresholds.get("default", 15)
+                    )
                 except Exception:
                     pass
                 logger.debug(
@@ -3383,7 +3395,7 @@ class TaskBoard:
                             "context_summary": "<what you were doing>",
                             "files_modified": "<files you touched>",
                             "next_steps": "<what to do next>",
-                        }
+                        },
                     }
         except Exception as _exhaust_err:
             logger.debug("[TaskBoard] exhaustion guard failed: %s", _exhaust_err)
@@ -3490,6 +3502,7 @@ class TaskBoard:
             # MARKER_204.FILE_SIGNAL: Write file signal for hook-based delivery
             try:
                 import json as _json_signal
+
                 signals_dir = Path.home() / ".claude" / "signals"
                 signals_dir.mkdir(parents=True, exist_ok=True)
                 signal_file = signals_dir / f"{target_role}.json"
@@ -3505,22 +3518,33 @@ class TaskBoard:
                 existing = []
                 if signal_file.exists():
                     try:
-                        existing = _json_signal.loads(signal_file.read_text(encoding="utf-8"))
+                        existing = _json_signal.loads(
+                            signal_file.read_text(encoding="utf-8")
+                        )
                         if not isinstance(existing, list):
                             existing = []
                     except Exception:
                         existing = []
                 existing.append(signal_entry)
-                signal_file.write_text(_json_signal.dumps(existing, ensure_ascii=False), encoding="utf-8")
-                logger.debug("[TaskBoard] FILE_SIGNAL: wrote %s (%d entries)", signal_file.name, len(existing))
+                signal_file.write_text(
+                    _json_signal.dumps(existing, ensure_ascii=False), encoding="utf-8"
+                )
+                logger.debug(
+                    "[TaskBoard] FILE_SIGNAL: wrote %s (%d entries)",
+                    signal_file.name,
+                    len(existing),
+                )
             except Exception as sig_err:
-                logger.debug("[TaskBoard] FILE_SIGNAL write failed (non-fatal): %s", sig_err)
+                logger.debug(
+                    "[TaskBoard] FILE_SIGNAL write failed (non-fatal): %s", sig_err
+                )
 
             # MARKER_205.NOTIFY_BUS: Emit notify event through EventBus → UDS daemon
             # This enables autospawn: daemon receives notify, checks tmux, spawns offline agent.
             try:
-                if hasattr(self, 'event_bus') and self.event_bus:
+                if hasattr(self, "event_bus") and self.event_bus:
                     from src.orchestration.event_bus import AgentEvent
+
                     event = AgentEvent(
                         event_type="notify",
                         source_agent="task_board",
@@ -3536,15 +3560,24 @@ class TaskBoard:
                     )
                     self.event_bus.emit(event)
             except Exception as bus_err:
-                logger.debug("[TaskBoard] NOTIFY_BUS emit failed (non-fatal): %s", bus_err)
+                logger.debug(
+                    "[TaskBoard] NOTIFY_BUS emit failed (non-fatal): %s", bus_err
+                )
 
             # MARKER_210.NOTIFY_WAKE_V2: Wake target agent via tmux on explicit notify().
             # Bug: notify() wrote to DB/signal but never called _synapse_wake().
             # Only send_notification() had the wake call. This caused Delta wake regression.
             try:
-                self._synapse_wake(target_role, message=self._build_wake_beacon(notif_id, source_role, target_role, message))
+                self._synapse_wake(
+                    target_role,
+                    message=self._build_wake_beacon(
+                        notif_id, source_role, target_role, message
+                    ),
+                )
             except Exception as wake_err:
-                logger.debug("[TaskBoard] notify wake failed for %s: %s", target_role, wake_err)
+                logger.debug(
+                    "[TaskBoard] notify wake failed for %s: %s", target_role, wake_err
+                )
 
             return {"success": True, "notification_id": notif_id}
         except Exception as e:
@@ -3566,13 +3599,17 @@ class TaskBoard:
         """
         try:
             from src.services.agent_registry import get_agent_registry
+
             reg = get_agent_registry()
             role = reg.get_by_callsign(target_role)
-            tool_type = getattr(role, "tool_type", "claude_code") if role else "claude_code"
+            tool_type = (
+                getattr(role, "tool_type", "claude_code") if role else "claude_code"
+            )
 
             if tool_type in ("vibe", "opencode"):
                 import json
                 from pathlib import Path
+
                 signal_data = {
                     "notification_id": notif_id,
                     "from": source_role,
@@ -3592,7 +3629,11 @@ class TaskBoard:
                 (claude_dir / f"{target_role}.json").write_text(
                     json.dumps(signal_data, ensure_ascii=False), encoding="utf-8"
                 )
-                logger.debug("[TaskBoard] Signal file written for %s (tool_type=%s)", target_role, tool_type)
+                logger.debug(
+                    "[TaskBoard] Signal file written for %s (tool_type=%s)",
+                    target_role,
+                    tool_type,
+                )
         except Exception as e:
             logger.debug("[TaskBoard] _write_vibe_signal failed (non-fatal): %s", e)
 
@@ -3714,9 +3755,16 @@ class TaskBoard:
                     "hit_count, last_recalled_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)",
                     (
-                        memory_id, role_id, project_id, task_id,
-                        memory_type, content, tags_json, trigger_json,
-                        now, expires_at,
+                        memory_id,
+                        role_id,
+                        project_id,
+                        task_id,
+                        memory_type,
+                        content,
+                        tags_json,
+                        trigger_json,
+                        now,
+                        expires_at,
                     ),
                 )
                 # Index in FTS5
@@ -3747,7 +3795,10 @@ class TaskBoard:
             {"success": True, "memories": [...], "count": N}
         """
         if not role_id and not memory_type and not query:
-            return {"success": False, "error": "At least one filter required (role_id, memory_type, or query)"}
+            return {
+                "success": False,
+                "error": "At least one filter required (role_id, memory_type, or query)",
+            }
 
         try:
             if query:
@@ -3858,31 +3909,49 @@ class TaskBoard:
                     "INSERT OR REPLACE INTO task_pins "
                     "(pin_id, role_id, task_id, context_summary, files_modified, next_steps, pinned_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (pin_id, role_id, task_id, context_summary, files_json, next_steps, now),
+                    (
+                        pin_id,
+                        role_id,
+                        task_id,
+                        context_summary,
+                        files_json,
+                        next_steps,
+                        now,
+                    ),
                 )
             # MARKER_PHASE8.PIN_EVICTION: LRU eviction — keep max 5 pins per role
             try:
-                self.db.execute("""
+                self.db.execute(
+                    """
                     DELETE FROM task_pins WHERE pin_id IN (
                         SELECT pin_id FROM task_pins
                         WHERE role_id = ?
                         ORDER BY pinned_at DESC
                         LIMIT -1 OFFSET 5
                     )
-                """, (role_id,))
+                """,
+                    (role_id,),
+                )
                 self.db.commit()
             except Exception as evict_err:
                 logger.debug("[TaskBoard] pin eviction failed: %s", evict_err)
             # MARKER_PHASE8.PIN_EVENT: Emit pin_handoff event for metrics (8l)
             try:
-                if hasattr(self, 'event_bus') and self.event_bus:
+                if hasattr(self, "event_bus") and self.event_bus:
                     from src.orchestration.event_bus import AgentEvent
-                    self.event_bus.emit(AgentEvent(
-                        event_type="pin_handoff",
-                        source_agent=role_id,
-                        payload={"action": "pin", "task_id": task_id, "pin_id": pin_id},
-                        tags=["pin_handoff"],
-                    ))
+
+                    self.event_bus.emit(
+                        AgentEvent(
+                            event_type="pin_handoff",
+                            source_agent=role_id,
+                            payload={
+                                "action": "pin",
+                                "task_id": task_id,
+                                "pin_id": pin_id,
+                            },
+                            tags=["pin_handoff"],
+                        )
+                    )
             except Exception:
                 pass
             return {"success": True, "pin_id": pin_id, "task_id": task_id}
@@ -3918,14 +3987,21 @@ class TaskBoard:
                 count = cursor.rowcount
             # MARKER_PHASE8.UNPIN_EVENT: Emit unpin event for metrics (8l)
             try:
-                if hasattr(self, 'event_bus') and self.event_bus and count > 0:
+                if hasattr(self, "event_bus") and self.event_bus and count > 0:
                     from src.orchestration.event_bus import AgentEvent
-                    self.event_bus.emit(AgentEvent(
-                        event_type="pin_handoff",
-                        source_agent=role_id,
-                        payload={"action": "unpin", "task_id": task_id, "unpinned": count},
-                        tags=["pin_handoff"],
-                    ))
+
+                    self.event_bus.emit(
+                        AgentEvent(
+                            event_type="pin_handoff",
+                            source_agent=role_id,
+                            payload={
+                                "action": "unpin",
+                                "task_id": task_id,
+                                "unpinned": count,
+                            },
+                            tags=["pin_handoff"],
+                        )
+                    )
             except Exception:
                 pass
             return {"success": True, "unpinned": count}
@@ -3956,17 +4032,19 @@ class TaskBoard:
             ).fetchall()
             pins = []
             for row in rows:
-                pins.append({
-                    "pin_id": row[0],
-                    "role_id": row[1],
-                    "task_id": row[2],
-                    "context_summary": row[3],
-                    "files_modified": json.loads(row[4]) if row[4] else [],
-                    "next_steps": row[5],
-                    "pinned_at": row[6],
-                    "task_title": row[7] or "",
-                    "task_status": row[8] or "unknown",
-                })
+                pins.append(
+                    {
+                        "pin_id": row[0],
+                        "role_id": row[1],
+                        "task_id": row[2],
+                        "context_summary": row[3],
+                        "files_modified": json.loads(row[4]) if row[4] else [],
+                        "next_steps": row[5],
+                        "pinned_at": row[6],
+                        "task_title": row[7] or "",
+                        "task_status": row[8] or "unknown",
+                    }
+                )
             return pins
         except Exception as e:
             logger.warning(f"[TaskBoard] get_pinned_tasks() failed: {e}")
@@ -3979,7 +4057,9 @@ class TaskBoard:
     _WAKE_COOLDOWN_SECS = 5  # MARKER_213.A2A_BEACON: reduced from 30s — beacons are short, debounce should not drop multi-part dispatches
     _WAKE_LOG = "/tmp/synapse_wake_log.jsonl"
 
-    def _build_wake_beacon(self, notif_id: str, source_role: str, target_role: str, message: str) -> str:
+    def _build_wake_beacon(
+        self, notif_id: str, source_role: str, target_role: str, message: str
+    ) -> str:
         """MARKER_213.A2A_BEACON: Build short wake beacon instead of truncated body.
 
         Format: [NOTIF] {id} | {src}→{tgt} | "{first 60 chars}..." | Full: vetka_task_board action=notifications role={tgt}
@@ -3997,7 +4077,12 @@ class TaskBoard:
     def _wake_log(role: str, method: str, message: str) -> None:
         """Append JSONL audit entry for wake verification."""
         try:
-            entry = {"ts": time.time(), "role": role, "method": method, "message": message}
+            entry = {
+                "ts": time.time(),
+                "role": role,
+                "method": method,
+                "message": message,
+            }
             with open(TaskBoard._WAKE_LOG, "a") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
@@ -4021,7 +4106,8 @@ class TaskBoard:
                 if age < self._WAKE_COOLDOWN_SECS:
                     logger.debug(
                         "[TaskBoard] SYNAPSE_WAKE debounce: %s woken %ds ago, skip",
-                        role, int(age),
+                        role,
+                        int(age),
                     )
                     return
         except Exception:
@@ -4031,7 +4117,8 @@ class TaskBoard:
         try:
             has = subprocess.run(
                 ["tmux", "has-session", "-t", session_name],
-                capture_output=True, timeout=3,
+                capture_output=True,
+                timeout=3,
             )
             if has.returncode == 0:
                 # MARKER_WAKE_LITE.TASK_ID_SIGNAL: Send task-specific wake hint if provided,
@@ -4039,7 +4126,8 @@ class TaskBoard:
                 send_text = message if message else "vetka session init"
                 subprocess.run(
                     ["tmux", "send-keys", "-t", session_name, send_text, "Enter"],
-                    capture_output=True, timeout=3,
+                    capture_output=True,
+                    timeout=3,
                 )
                 ts_file.touch()
                 self._wake_log(role, "tmux", message)
@@ -4052,27 +4140,38 @@ class TaskBoard:
         try:
             subprocess.run(
                 ["pgrep", "-q", "WindowServer"],
-                capture_output=True, timeout=2,
+                capture_output=True,
+                timeout=2,
             )
             wake_msg = message or f"Agent {role} needs attention"
             subprocess.Popen(
-                ["osascript", "-e",
-                 f'display notification "{wake_msg}" with title "[VETKA] {role} Wake"'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [
+                    "osascript",
+                    "-e",
+                    f'display notification "{wake_msg}" with title "[VETKA] {role} Wake"',
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             subprocess.Popen(
                 ["osascript", "-e", 'tell application "Terminal" to activate'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             subprocess.Popen(
                 ["afplay", "/System/Library/Sounds/Ping.aiff"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             ts_file.touch()
             self._wake_log(role, "osascript", message)
-            logger.info("[TaskBoard] SYNAPSE_WAKE: macOS notified %s (no tmux session)", role)
+            logger.info(
+                "[TaskBoard] SYNAPSE_WAKE: macOS notified %s (no tmux session)", role
+            )
         except Exception as exc:
-            logger.debug("[TaskBoard] SYNAPSE_WAKE macOS fallback failed for %s: %s", role, exc)
+            logger.debug(
+                "[TaskBoard] SYNAPSE_WAKE macOS fallback failed for %s: %s", role, exc
+            )
 
     def _auto_notify(
         self,
@@ -4116,12 +4215,17 @@ class TaskBoard:
             # MARKER_210.DOMAIN_ROUTING: Route to domain captain instead of hardcoded Commander
             try:
                 from src.services.agent_registry import get_agent_registry
-                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+
+                _captains = get_agent_registry().get_domain_captains(
+                    task.get("domain", "")
+                )
             except Exception:
                 _captains = ["Commander"]
             for _cap in _captains:
                 if _cap != owner:  # Don't duplicate if owner is also captain
-                    targets.append((_cap, f"Task verified, ready to merge: {title} [{task_id}]"))
+                    targets.append(
+                        (_cap, f"Task verified, ready to merge: {title} [{task_id}]")
+                    )
         elif ntype == self.NOTIF_TASK_NEEDS_FIX:
             # Notify owner
             if owner:
@@ -4130,14 +4234,19 @@ class TaskBoard:
             # MARKER_210.DOMAIN_ROUTING: Route to domain captains
             try:
                 from src.services.agent_registry import get_agent_registry
-                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+
+                _captains = get_agent_registry().get_domain_captains(
+                    task.get("domain", "")
+                )
             except Exception:
                 _captains = ["Commander"]
             for _cap in _captains:
                 targets.append((_cap, f"Ready to merge: {title} [{task_id}]"))
         elif ntype == self.NOTIF_TASK_COMPLETED:
             # Notify Commander about new completion
-            targets.append(("Commander", f"Task completed by {owner}: {title} [{task_id}]"))
+            targets.append(
+                ("Commander", f"Task completed by {owner}: {title} [{task_id}]")
+            )
             # MARKER_212.WAKE_CHAIN: Also notify verification_agent so QA auto-wakes
             verifier = task.get("verification_agent", "")
             if verifier and verifier != owner:
@@ -4158,7 +4267,9 @@ class TaskBoard:
                     if recent and recent[0] > 0:
                         logger.debug(
                             "[TaskBoard] DEDUP: skipping duplicate %s → %s for task %s",
-                            ntype, target, task_id,
+                            ntype,
+                            target,
+                            task_id,
                         )
                         continue
                 except Exception:
@@ -4182,7 +4293,10 @@ class TaskBoard:
         if ntype in (self.NOTIF_TASK_VERIFIED, self.NOTIF_READY_TO_MERGE):
             try:
                 from src.services.agent_registry import get_agent_registry
-                wake_roles.extend(get_agent_registry().get_domain_captains(task.get("domain", "")))
+
+                wake_roles.extend(
+                    get_agent_registry().get_domain_captains(task.get("domain", ""))
+                )
             except Exception:
                 wake_roles.append("Commander")
         # Wake task owner on needs_fix so they see the QA failure
@@ -4192,7 +4306,10 @@ class TaskBoard:
         if ntype == self.NOTIF_TASK_NEEDS_FIX:
             try:
                 from src.services.agent_registry import get_agent_registry
-                _captains = get_agent_registry().get_domain_captains(task.get("domain", ""))
+
+                _captains = get_agent_registry().get_domain_captains(
+                    task.get("domain", "")
+                )
                 for _cap in _captains:
                     if _cap not in wake_roles:
                         wake_roles.append(_cap)
@@ -5239,7 +5356,9 @@ class TaskBoard:
 
     # ── MARKER_184.5: Worktree → Main merge via TaskBoard ────────────
 
-    async def merge_request(self, task_id: str, strategy: str = None, force: bool = False) -> Dict[str, Any]:
+    async def merge_request(
+        self, task_id: str, strategy: str = None, force: bool = False
+    ) -> Dict[str, Any]:
         """Request merge of worktree branch into main via verification flow.
 
         MARKER_184.5: Agents call this instead of manual cherry-pick.
@@ -5323,16 +5442,17 @@ class TaskBoard:
 
         # MARKER_210.MERGE_AUTHORITY: Block merge if caller has no authority for task domain
         import os as _os
+
         _caller_role = _os.environ.get("VETKA_AGENT_ROLE", "").strip()
         if _caller_role and _caller_role != "Commander":
             try:
                 from src.services.agent_registry import get_agent_registry
+
                 _reg = get_agent_registry()
                 _merge_captains = (_reg.data or {}).get("merge_captains", {})
                 _task_domain = task.get("domain", "")
-                _authorized = (
-                    _merge_captains.get(_task_domain)
-                    or _merge_captains.get("default", ["Commander"])
+                _authorized = _merge_captains.get(_task_domain) or _merge_captains.get(
+                    "default", ["Commander"]
                 )
                 if _caller_role not in _authorized:
                     return {
@@ -5342,14 +5462,16 @@ class TaskBoard:
                             f"for domain '{_task_domain}'. "
                             f"Authorized: {', '.join(_authorized)}. "
                             f"Notify the captain: vetka_task_board action=notify "
-                            f"target_role={_authorized[0]} message=\"Task ready for merge: {task_id}\""
+                            f'target_role={_authorized[0]} message="Task ready for merge: {task_id}"'
                         ),
                         "merge_authority": _authorized,
                         "caller_role": _caller_role,
                         "task_domain": _task_domain,
                     }
             except Exception as _ma_err:
-                logger.debug("[MergeAuthority] Registry check failed (non-fatal): %s", _ma_err)
+                logger.debug(
+                    "[MergeAuthority] Registry check failed (non-fatal): %s", _ma_err
+                )
 
         branch = task.get("branch_name")
         # MARKER_195.21: Auto-infer branch from role via AgentRegistry
@@ -5798,7 +5920,9 @@ class TaskBoard:
                         f"{diff_ref_a}..{diff_ref_b} (task.commit_hash)"
                     )
                     rc, diff_out, _err = await _git(
-                        "diff", "--name-only", f"{diff_ref_a}..{diff_ref_b}",
+                        "diff",
+                        "--name-only",
+                        f"{diff_ref_a}..{diff_ref_b}",
                         cwd=str(PROJECT_ROOT),
                     )
                     if rc != 0:
@@ -5808,7 +5932,9 @@ class TaskBoard:
                             f"({_err}), falling back to main..{branch}"
                         )
                         rc, diff_out, _ = await _git(
-                            "diff", "--name-only", f"main..{branch}",
+                            "diff",
+                            "--name-only",
+                            f"main..{branch}",
                             cwd=str(PROJECT_ROOT),
                         )
                 else:
@@ -5860,19 +5986,29 @@ class TaskBoard:
                             cp = Path(candidate)
                             cand_stem = cp.stem
                             # test_task_board.py or task_board_test.py matches task_board.py
-                            if cand_stem == f"test_{stem}" or cand_stem == f"{stem}_test" or cand_stem == stem:
+                            if (
+                                cand_stem == f"test_{stem}"
+                                or cand_stem == f"{stem}_test"
+                                or cand_stem == stem
+                            ):
                                 sidecars.add(candidate)
                             # __init__.py in same directory
-                            elif cp.name == "__init__.py" and str(cp.parent) == str(fp.parent):
+                            elif cp.name == "__init__.py" and str(cp.parent) == str(
+                                fp.parent
+                            ):
                                 sidecars.add(candidate)
                             # .json ↔ .jsonl variant matching
-                            elif suffix in (".json", ".jsonl") and cp.suffix in (".json", ".jsonl"):
+                            elif suffix in (".json", ".jsonl") and cp.suffix in (
+                                ".json",
+                                ".jsonl",
+                            ):
                                 if cand_stem == stem:
                                     sidecars.add(candidate)
                     if sidecars:
                         logger.info(
                             "[MergeRequest] smart_snapshot: auto-detected %d sidecar(s): %s",
-                            len(sidecars), sorted(sidecars),
+                            len(sidecars),
+                            sorted(sidecars),
                         )
                     scoped_files |= sidecars
 
@@ -5899,7 +6035,11 @@ class TaskBoard:
                     )
                 if rc_base == 0 and merge_base:
                     rc_mt, mt_out, mt_err = await _git(
-                        "merge-tree", merge_base.strip(), "main", branch, cwd=str(PROJECT_ROOT)
+                        "merge-tree",
+                        merge_base.strip(),
+                        "main",
+                        branch,
+                        cwd=str(PROJECT_ROOT),
                     )
                     # merge-tree outputs conflict markers — check if any scoped files conflict.
                     # Parse section-by-section: each file's section typically starts with its path.
@@ -5918,7 +6058,9 @@ class TaskBoard:
                             if current_file and ("<<<<<<" in line or "+<<<<<<" in line):
                                 conflicting_set.add(current_file)
                         # Fallback: if no section-based hits but global conflict exists
-                        if not conflicting_set and ("<<<<<<" in mt_out or "+<<<<<<" in mt_out):
+                        if not conflicting_set and (
+                            "<<<<<<" in mt_out or "+<<<<<<" in mt_out
+                        ):
                             for sf in scoped_files:
                                 if sf in mt_out:
                                     conflicting_set.add(sf)
@@ -5932,7 +6074,8 @@ class TaskBoard:
                             # Notify Commander about conflict
                             try:
                                 self._auto_notify(
-                                    task or {}, self.NOTIF_TASK_NEEDS_FIX,
+                                    task or {},
+                                    self.NOTIF_TASK_NEEDS_FIX,
                                     extra_msg=_conflict_msg,
                                     source_role="merge_request",
                                 )
@@ -5951,7 +6094,8 @@ class TaskBoard:
                     if rc != 0:
                         logger.warning(
                             "[MergeRequest] smart_snapshot: checkout '%s' failed: %s",
-                            fpath, err,
+                            fpath,
+                            err,
                         )
 
                 # Check if anything changed
@@ -5966,15 +6110,20 @@ class TaskBoard:
                 # Stage and commit
                 await _git("add", "-A")
                 rc, _, err = await _git(
-                    "commit", "-m",
+                    "commit",
+                    "-m",
                     f"Smart snapshot merge {branch} into main ({len(scoped_files)} files) via TaskBoard",
                 )
                 if rc != 0:
-                    return {"success": False, "error": f"smart_snapshot commit failed: {err}"}
+                    return {
+                        "success": False,
+                        "error": f"smart_snapshot commit failed: {err}",
+                    }
 
                 logger.info(
                     "[MergeRequest] smart_snapshot: merged %d files from %s",
-                    len(scoped_files), branch,
+                    len(scoped_files),
+                    branch,
                 )
 
             elif strategy == "snapshot":
@@ -6007,18 +6156,22 @@ class TaskBoard:
                         logger.info(
                             "[MergeRequest] snapshot auto-expand: %d sidecar file(s) "
                             "changed in branch but outside allowed_paths: %s",
-                            len(sidecar_files), sorted(sidecar_files),
+                            len(sidecar_files),
+                            sorted(sidecar_files),
                         )
                         for fpath in sorted(sidecar_files):
                             rc2, _, err2 = await _git("checkout", branch, "--", fpath)
                             if rc2 != 0:
                                 logger.warning(
                                     "[MergeRequest] snapshot auto-expand: '%s' checkout "
-                                    "failed, skipping: %s", fpath, err2
+                                    "failed, skipping: %s",
+                                    fpath,
+                                    err2,
                                 )
                             else:
                                 logger.debug(
-                                    "[MergeRequest] snapshot auto-expand: included '%s'", fpath
+                                    "[MergeRequest] snapshot auto-expand: included '%s'",
+                                    fpath,
                                 )
 
                 # Check if anything changed
@@ -6991,7 +7144,9 @@ class TaskBoard:
         if merge_strategy == "smart_snapshot":
             try:
                 # Check MCP tools registry
-                mcp_tools_init = Path(PROJECT_ROOT) / "src" / "mcp" / "tools" / "__init__.py"
+                mcp_tools_init = (
+                    Path(PROJECT_ROOT) / "src" / "mcp" / "tools" / "__init__.py"
+                )
                 if mcp_tools_init.exists():
                     content = mcp_tools_init.read_text()
                     # Look for smart_snapshot in enum definitions
@@ -7005,10 +7160,14 @@ class TaskBoard:
                             "[PostMergeValidation] WAVE 2 PREVENTION: smart_snapshot enum registration missing"
                         )
                     else:
-                        logger.info("[PostMergeValidation] smart_snapshot enum registration verified")
+                        logger.info(
+                            "[PostMergeValidation] smart_snapshot enum registration verified"
+                        )
 
                 # Check that the strategy is actually defined/implemented
-                merge_py = Path(PROJECT_ROOT) / "src" / "orchestration" / "task_board.py"
+                merge_py = (
+                    Path(PROJECT_ROOT) / "src" / "orchestration" / "task_board.py"
+                )
                 if merge_py.exists():
                     tb_content = merge_py.read_text()
                     if 'strategy == "smart_snapshot"' not in tb_content:
@@ -7022,9 +7181,13 @@ class TaskBoard:
         # Check 2: Hook syntax validation (Wave 3 regression prevention)
         # Wave 3: PostToolUse hook in generate_claude_md.py was invalid but passed
         try:
-            generate_claude_path = Path(PROJECT_ROOT) / "src" / "tools" / "generate_claude_md.py"
+            generate_claude_path = (
+                Path(PROJECT_ROOT) / "src" / "tools" / "generate_claude_md.py"
+            )
             if not generate_claude_path.exists():
-                generate_claude_path = Path(PROJECT_ROOT) / "scripts" / "generate_claude_md.py"
+                generate_claude_path = (
+                    Path(PROJECT_ROOT) / "scripts" / "generate_claude_md.py"
+                )
 
             if generate_claude_path.exists():
                 content = generate_claude_path.read_text()
@@ -7045,9 +7208,13 @@ class TaskBoard:
                             "PostToolUse hook found in generate_claude_md.py but may be incorrectly defined. "
                             "Verify hook syntax: hooks must be properly function/class definitions."
                         )
-                        logger.warning("[PostMergeValidation] WAVE 3 PREVENTION: PostToolUse hook syntax issue")
+                        logger.warning(
+                            "[PostMergeValidation] WAVE 3 PREVENTION: PostToolUse hook syntax issue"
+                        )
                     else:
-                        logger.info("[PostMergeValidation] generate_claude_md.py hooks syntax OK")
+                        logger.info(
+                            "[PostMergeValidation] generate_claude_md.py hooks syntax OK"
+                        )
         except Exception as e:
             logger.debug(f"[PostMergeValidation] Hook syntax check failed: {e}")
 
@@ -7068,7 +7235,9 @@ class TaskBoard:
             "validated_at": datetime.now().isoformat(),
             "wave_prevention": {
                 "wave_1": "Pre-commit hook semantic validation (sherpa.py API checks)",
-                "wave_2": "Post-merge smart_snapshot enum registration check (this function)" if merge_strategy == "smart_snapshot" else None,
+                "wave_2": "Post-merge smart_snapshot enum registration check (this function)"
+                if merge_strategy == "smart_snapshot"
+                else None,
                 "wave_3": "Post-merge hook syntax validation + critical var deletion checks (this function)",
             },
         }
@@ -7104,7 +7273,9 @@ def reset_task_board() -> None:
 
 
 # MARKER_210.TASK_BOARD_GUARDRAIL: Pre-commit hook helper
-def check_claimed_task_for_hook(role: str, time_window_hours: int = 4) -> Optional[Dict[str, Any]]:
+def check_claimed_task_for_hook(
+    role: str, time_window_hours: int = 4
+) -> Optional[Dict[str, Any]]:
     """Check if a role has a claimed/running task (for pre-commit hook compliance).
 
     Used by pre-commit hook to verify agent has a claimed task before allowing commit.
@@ -7146,5 +7317,7 @@ def check_claimed_task_for_hook(role: str, time_window_hours: int = 4) -> Option
             }
         return None
     except Exception as e:
-        logger.warning(f"[check_claimed_task_for_hook] Query failed for role {role}: {e}")
+        logger.warning(
+            f"[check_claimed_task_for_hook] Query failed for role {role}: {e}"
+        )
         return None
